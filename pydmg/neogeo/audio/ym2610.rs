@@ -1780,6 +1780,12 @@ struct FmOp {
     am_enabled: bool,
     /// Latched key state for FM_KEYON / FM_KEYOFF detection.
     key: bool,
+    /// SSG-EG register $90-$9F low nibble: bit3=enable, bit2=attack,
+    /// bit1=alternate, bit0=hold (FBNeo `SLOT->ssg`).
+    ssg: u8,
+    /// SSG-EG negation latch (FBNeo `SLOT->ssgn`). Bit 1 set = output
+    /// currently inverted; bit 0 = "swapped once" marker for hold shapes.
+    ssgn: u8,
 }
 
 impl FmOp {
@@ -1796,6 +1802,8 @@ impl FmOp {
             eg_sel_rr: 17 * (RATE_STEPS as u32),
             am_enabled: false,
             key: false,
+            ssg: 0,
+            ssgn: 0,
         }
     }
 
@@ -1826,6 +1834,9 @@ impl FmOp {
         if !self.key {
             self.key = true;
             self.phase = 0;
+            // FBNeo fm.c L940: re-arm SSG-EG inversion latch from the attack
+            // bit of the shape ($90 bit 2) on every key-on.
+            self.ssgn = (self.ssg & 0x04) >> 1;
             self.state = EG_ATT;
         }
     }
@@ -1844,7 +1855,16 @@ impl FmOp {
 
     /// FBNeo `advance_eg_channel` (per slot). `eg_cnt` is the chip global env
     /// counter (incremented every `eg_timer_overflow` chip samples).
+    ///
+    /// Includes the full SSG-EG state machine (fm.c L1240-1416, the
+    /// non-YM2612/YM2608 branch used for the YM2610): when SSG-EG is enabled
+    /// ($90 bit 3) decay and sustain run 4x faster, and when the envelope
+    /// reaches ENV_QUIET during sustain the shape either holds (bit 0),
+    /// alternates inversion (bit 1) and/or repeats by restarting the phase
+    /// generator with volume=511 in attack state.
     fn advance_eg(&mut self, eg_cnt: u32) {
+        let ssg_on = (self.ssg & 0x08) != 0;
+        let mut swap_flag: u8 = 0;
         match self.state {
             EG_ATT => {
                 let mask = (1u32 << self.eg_sh_ar) - 1;
@@ -1863,16 +1883,44 @@ impl FmOp {
                 let mask = (1u32 << self.eg_sh_d1r) - 1;
                 if (eg_cnt & mask) == 0 {
                     let step_idx = self.eg_sel_d1r + ((eg_cnt >> self.eg_sh_d1r) & 7);
-                    self.volume += EG_INC[step_idx as usize] as i32;
+                    let inc = EG_INC[step_idx as usize] as i32;
+                    // SSG-EG: decay runs 4x faster on YM2610 (fm.c L1284).
+                    self.volume += if ssg_on { 4 * inc } else { inc };
                     if self.volume >= self.sl as i32 {
-                        self.volume = self.sl as i32;
+                        // FBNeo non-2612/2608 branch does NOT clamp volume to
+                        // SL here, it only changes state (fm.c L1286/L1296).
                         self.state = EG_SUS;
                     }
                 }
             }
             EG_SUS => {
                 let mask = (1u32 << self.eg_sh_d2r) - 1;
-                if (eg_cnt & mask) == 0 {
+                if ssg_on {
+                    if (eg_cnt & mask) == 0 {
+                        let step_idx = self.eg_sel_d2r + ((eg_cnt >> self.eg_sh_d2r) & 7);
+                        // 4x faster on YM2610 (fm.c L1315).
+                        self.volume += 4 * EG_INC[step_idx as usize] as i32;
+                        if self.volume >= ENV_QUIET as i32 {
+                            // Non-2612/2608: snap straight to max attenuation.
+                            self.volume = MAX_ATT_INDEX;
+                            if (self.ssg & 0x01) != 0 {
+                                // Hold shape: swap once (recording it in bit
+                                // 0 of ssgn), then keep the level forever.
+                                if (self.ssgn & 1) == 0 {
+                                    swap_flag = (self.ssg & 0x02) | 1;
+                                }
+                            } else {
+                                // Repeat shape: same as KEY-ON — restart the
+                                // phase generator and re-enter attack with
+                                // volume=511 (fm.c L1355-1358).
+                                self.phase = 0;
+                                self.volume = 511;
+                                self.state = EG_ATT;
+                                swap_flag = self.ssg & 0x02;
+                            }
+                        }
+                    }
+                } else if (eg_cnt & mask) == 0 {
                     let step_idx = self.eg_sel_d2r + ((eg_cnt >> self.eg_sh_d2r) & 7);
                     self.volume += EG_INC[step_idx as usize] as i32;
                     if self.volume >= MAX_ATT_INDEX { self.volume = MAX_ATT_INDEX; }
@@ -1891,13 +1939,23 @@ impl FmOp {
             }
             _ => {}
         }
+        // Reverse the inversion latch after this step (fm.c L1418).
+        self.ssgn ^= swap_flag;
     }
 
     /// FBNeo `volume_calc(SLOT)` simplified: env attenuation + TL, clipped.
     /// Returns combined attenuation 0..1023 (0 loudest).
+    ///
+    /// When SSG-EG is enabled and the negation latch (`ssgn` bit 1) is set
+    /// while the envelope is active (state > EG_REL), the raw attenuation is
+    /// bitwise-inverted (fm.c L1410-1411) which produces the characteristic
+    /// inverted-sawtooth shapes.
     #[inline]
     fn vol_out(&self) -> u32 {
-        let v = self.volume.max(MIN_ATT_INDEX).min(MAX_ATT_INDEX) as u32;
+        let mut v = self.volume.max(MIN_ATT_INDEX).min(MAX_ATT_INDEX) as u32;
+        if (self.ssg & 0x08) != 0 && (self.ssgn & 0x02) != 0 && self.state > EG_REL {
+            v ^= MAX_ATT_INDEX as u32;
+        }
         v + self.tl
     }
 
@@ -2166,6 +2224,13 @@ impl FmOpn {
                 chan.op[op].sl = SL_TABLE[sl_nib];
                 chan.op[op].rr = 34 + (((val & 0x0F) as u32) << 2);
                 chan.op[op].refresh_eg_rates();
+            }
+            0x90 => {
+                // SSG-EG shape (FBNeo fm.c L2107-2109):
+                //   bit 3 = enable, bit 2 = attack, bit 1 = alternate,
+                //   bit 0 = hold. ssgn bit 1 primed from the attack bit.
+                chan.op[op].ssg = val & 0x0F;
+                chan.op[op].ssgn = (val & 0x04) >> 1;
             }
             0xA0 => match addr & 0x0C {
                 0x00 => { // F-num low (write must follow $A4 high latch)
@@ -3060,5 +3125,131 @@ mod adpcm_a_volume_tests {
                 ch.adpcm_out, expected,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ssg_eg_tests {
+    use super::*;
+
+    /// Build an FmOpn with SSG-EG programmed on ch1/op1 via register writes.
+    fn opn_with_ssg(shape: u8) -> FmOpn {
+        let mut fm = FmOpn::new();
+        // Register slot x1 = channel 1, raw slot 0 = OP1.
+        fm.write_reg(0x91, shape, false);
+        fm
+    }
+
+    #[test]
+    fn reg_0x90_sets_ssg_and_ssgn() {
+        let fm = opn_with_ssg(0x0F);
+        assert_eq!(fm.ch[1].op[0].ssg, 0x0F);
+        // ssgn primed from attack bit: (0x04)>>1 = 2.
+        assert_eq!(fm.ch[1].op[0].ssgn, 0x02);
+
+        let fm2 = opn_with_ssg(0x08);
+        assert_eq!(fm2.ch[1].op[0].ssg, 0x08);
+        assert_eq!(fm2.ch[1].op[0].ssgn, 0x00);
+    }
+
+    #[test]
+    fn key_on_rearms_ssgn_from_attack_bit() {
+        let mut op = FmOp::new();
+        op.ssg = 0x0C; // enable + attack
+        op.ssgn = 0;   // scrambled by previous playback
+        op.key_on();
+        assert_eq!(op.ssgn, 0x02, "key-on must re-arm ssgn = (ssg&4)>>1");
+        assert_eq!(op.state, EG_ATT);
+        assert_eq!(op.phase, 0);
+    }
+
+    #[test]
+    fn vol_out_inverts_when_ssgn_negated() {
+        let mut op = FmOp::new();
+        op.volume = 100;
+        op.tl = 0;
+        op.state = EG_SUS; // active (> EG_REL)
+        op.ssg = 0x08;
+        op.ssgn = 0x02;
+        assert_eq!(op.vol_out(), 100 ^ MAX_ATT_INDEX as u32);
+        // Without the enable bit there is no inversion.
+        op.ssg = 0;
+        assert_eq!(op.vol_out(), 100);
+        // In release/off the inversion is dropped too.
+        op.ssg = 0x08;
+        op.state = EG_REL;
+        assert_eq!(op.vol_out(), 100);
+    }
+
+    #[test]
+    fn ssg_repeat_shape_restarts_attack_at_env_quiet() {
+        // Shape 0x08 (\\\\): repeat, no hold, no alternate.
+        let mut op = FmOp::new();
+        op.ssg = 0x08;
+        op.ssgn = 0;
+        op.state = EG_SUS;
+        op.volume = ENV_QUIET as i32; // already at the SSG "quiet" threshold
+        op.phase = 0xDEAD;
+        op.sr = 32 + (10 << 1);
+        op.refresh_eg_rates();
+        // Force an EG step where the counter aligns (mask hit at eg_cnt=0).
+        op.advance_eg(0);
+        assert_eq!(op.state, EG_ATT, "repeat shape must re-enter attack");
+        assert_eq!(op.volume, 511, "repeat shape restarts with volume=511");
+        assert_eq!(op.phase, 0, "phase generator must restart");
+        assert_eq!(op.ssgn, 0, "no alternate bit -> no inversion toggle");
+    }
+
+    #[test]
+    fn ssg_hold_shape_swaps_once_then_holds() {
+        // Shape 0x0B (\¯¯¯): enable+alternate+hold.
+        let mut op = FmOp::new();
+        op.ssg = 0x0B;
+        op.ssgn = 0;
+        op.state = EG_SUS;
+        op.volume = ENV_QUIET as i32;
+        op.sr = 32 + (10 << 1);
+        op.refresh_eg_rates();
+        op.advance_eg(0);
+        assert_eq!(op.state, EG_SUS, "hold shape stays in sustain");
+        assert_eq!(op.volume, MAX_ATT_INDEX);
+        // swap_flag = (ssg&2)|1 = 3 -> ssgn 0^3 = 3 (inverted + swapped-once).
+        assert_eq!(op.ssgn, 0x03);
+        // Second pass: swapped-once marker set, so nothing changes any more.
+        op.advance_eg(0);
+        assert_eq!(op.ssgn, 0x03, "hold shape must not swap twice");
+        assert_eq!(op.volume, MAX_ATT_INDEX);
+    }
+
+    #[test]
+    fn ssg_decay_runs_4x_faster() {
+        // Same DR / same eg counter: SSG-EG decay increment must be 4x.
+        let mk = |ssg: u8| {
+            let mut op = FmOp::new();
+            op.ssg = ssg;
+            op.state = EG_DEC;
+            op.volume = 0;
+            op.sl = MAX_ATT_INDEX as u32; // don't hit SL during the test
+            op.dr = 32 + (16 << 1);
+            op.refresh_eg_rates();
+            op
+        };
+        let mut plain = mk(0x00);
+        let mut ssg = mk(0x08);
+        // Find an eg_cnt where the rate mask hits and the increment is nonzero.
+        let mut checked = false;
+        for cnt in 0u32..64 {
+            let v0p = plain.volume;
+            let v0s = ssg.volume;
+            plain.advance_eg(cnt);
+            ssg.advance_eg(cnt);
+            let dp = plain.volume - v0p;
+            let ds = ssg.volume - v0s;
+            if dp > 0 {
+                assert_eq!(ds, 4 * dp, "SSG-EG decay must be 4x plain decay");
+                checked = true;
+            }
+        }
+        assert!(checked, "test never hit a decay step; adjust DR");
     }
 }
