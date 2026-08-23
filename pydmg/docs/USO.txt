@@ -1,0 +1,504 @@
+================================================================================
+neogeo-rs v18 — Uso y compilación
+================================================================================
+
+Emulador del SNK Neo Geo (AES / MVS) escrito en Rust desde cero.
+
+ESTADO ACTUAL (snapshot "v16 — CPUs at 100%"):
+
+  CPUs
+  ----
+  * M68000   : 100.00 %  (317,500 / 317,500 SingleStepTests / 127 ficheros)
+  * Z80      : 100.00 %  (1,604,000 / 1,604,000 SingleStepTests,
+                          incluyendo tablas main, CB, ED, DD, FD, DDCB, FDCB,
+                          Q register, MEMPTR/WZ, block ops, undocumented YX)
+  * Workspace `cargo test --release --tests`: 43 tests, todos verdes.
+
+  Sistema
+  -------
+  * Bus Neo Geo completo (memory map oficial, watchdog, NEO-D0 banking).
+  * LSPC con VRAM port MAME-accurate (68 KiB, wraparound correcto).
+  * ROM loader (.zip / dir / archivo único).
+  * uPD4990A RTC funcional (cmd 0x00-0x07).
+  * Auto-press / auto-coin para simular partidas sin teclado.
+
+  Vídeo
+  -----
+  * Renderer 320×224 RGBA con fix-layer LEGIBLE.
+  * Sprite layer scanline-accurate, con pre-decoder de C-ROMs
+    (32 MiB precomputados al cargar, ~5× speedup, byte-idéntico a MAME).
+  * Palette LUT con bit "dark" y bank-select por hardware ($380000).
+  * Auto-animation counter (sprites de 2/4/8 frames del LSPC).
+  * PNG encoder built-in (sin dependencia png/flate2).
+  * Metal Slug attract corre a ~925 fps efectivos sobre simulación 60 Hz.
+
+  Audio
+  -----
+  * Z80 al 100% Y conectado en lockstep al sistema. Ejecuta el M1 ROM
+    real del cartucho con su sound driver, NMI desde el soundlatch del
+    68K ($320000), banking, y reply de vuelta al 68K.
+  * YM2610: implementaciones funcionales y verificadas contra FBNeo:
+      - ADPCM-A (6 canales) con jedi_table + steps[49] + step_inc[8]
+        verbatim de fm.c.
+      - ADPCM-B (1 canal) con Delta-T tableB1/B2 verbatim de ymdeltat.c.
+      - SSG (3 tonos + ruido + envelope) estilo AY-3-8910.
+  * FM (4 canales OPN) ahora FUNCIONAL (simplificado: 2 operadores/canal,
+    algoritmos 0..7 aproximados, ADSR de 4 estados, pan L/R independiente,
+    feedback). El self-test `examples/fm_test` genera una nota A4 audible
+    con peak=1151, 99% non-zero, ~262 Hz.
+  * Timer A/B del YM2610 → IRQ → Z80 RST $38 (IM1) cycle-correct por sample
+    nativo del chip. Permite que el secuenciador del driver del juego avance.
+  * Mapeo de registros del YM2610 CORREGIDO (era inverso): Port A = SSG +
+    ADPCM-B + timers + FM ch.1/2; Port B = ADPCM-A + FM ch.3/4 (alineado
+    con FBNeo fm.c).
+  * Soundlatch con edge-triggered NMI: una sola NMI por escritura del 68K,
+    se mantiene asserted hasta que el Z80 lee el latch (IN $00) o
+    deshabilita la NMI (OUT $18).
+  * Nota: el demo attract de Metal Slug es silencioso *por diseño*: el
+    driver Z80 inicializa con TL=$7F (silencio) y pan=$00, sin key-on FM.
+    Para oír música hay que llegar a gameplay real (insertar coin +
+    seleccionar Mission), o jugar a otros juegos cuyo demo sí tenga BGM.
+  * Salida WAV 16-bit estereo @ 55.555 Hz (nativa del YM2610) via
+    --audio-out.
+
+  Lo que ya se ve en pantalla
+  ---------------------------
+  * UNI-BIOS arranca, pinta "CROSS HATCH TEST" perfectamente legible.
+  * BIOS oficial asia-s3 carga 4094/4096 paletas y 381/381 sprites SCB.
+  * Metal Slug attract llega a la PANTALLA DE TÍTULO COMPLETA con:
+      "SUPER VEHICLE-001"
+      logo gigante "METAL SLUG TM" texturizado
+      "© 1996 NAZCA CORPORATION"
+      "LEVEL-4   CREDIT 00"
+      silueta del tanque al fondo
+  * 1.800 frames en 2,12 s = ~850 fps efectivos sobre simulación 60 Hz.
+
+--------------------------------------------------------------------------------
+1. REQUISITOS
+--------------------------------------------------------------------------------
+
+- Rust toolchain >= 1.86 (edition2024 lo necesita clap_lex 1.1).
+  Recomendado: rustc 1.88+ estable.
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      rustup default stable
+
+- Sistema: Linux x86_64 probado. macOS/Windows deberían compilar igual,
+  ya que no hay dependencias unsafe ni binarios FFI.
+
+- Disco: ~500 MiB para `target/` tras el build release.
+
+- Para el test runner del 68000:  Python 3 (sólo para `decode.py`)
+  y ~1 GiB temporal donde extraer los .json del corpus.
+
+--------------------------------------------------------------------------------
+2. COMPILACIÓN
+--------------------------------------------------------------------------------
+
+Desde la raíz del proyecto:
+
+    # Workspace entero (CPUs + core + CLI + tests)
+    cargo build --release --workspace
+
+    # Sólo el binario del emulador
+    cargo build --release -p neogeo-cli
+    # → target/release/neogeo
+
+    # Sólo el crate Z80 (rápido, para iterar sobre los tests)
+    cargo build --release -p z80
+
+    # Sólo el crate M68K
+    cargo build --release -p m68k
+
+Tip: para builds incrementales sin reentrenar todo el workspace:
+    export CARGO_TARGET_DIR=$HOME/.cache/neogeo-rs-target
+
+--------------------------------------------------------------------------------
+3. EJECUCIÓN — BOOT DE UN CARTUCHO NEO GEO
+--------------------------------------------------------------------------------
+
+Casos típicos:
+
+  a) Un .zip estilo MAME / FBNeo (lo más cómodo; BIOS suele estar dentro):
+        ./target/release/neogeo --cart mslug.zip --max-frames 100 \
+            --hardware mvs
+
+  b) Un directorio con los ROM sueltos (.p1, .s1, .m1, .cX, .vX, bios):
+        ./target/release/neogeo --cart ./mslug/   --max-frames 100 \
+            --hardware mvs
+
+  c) Sólo un .bin/.rom (homebrew, debug):
+        ./target/release/neogeo --cart prog.bin   --max-instructions 50000 \
+            --hardware mvs
+
+Opciones de hardware:
+    --hardware mvs   Modo arcade (lo habitual; permite "coin in").
+    --hardware aes   Modo consola doméstica (sin coin slot).
+
+Opciones generales:
+
+  --max-instructions N      Detiene tras N instrucciones (overrides frames).
+  --max-frames N            Ejecuta N frames de video (~200_000 cycles cada uno).
+  --trace-cpu               Imprime una línea por instrucción (verboso).
+  --dump-frames-dir DIR     Directorio destino para PNG (se crea si no existe).
+  --dump-every-frames N     Vuelca uno de cada N frames (default = no dump).
+
+Opciones de audio (NUEVO en v17):
+
+  --audio-out PATH          Captura la salida del YM2610 a un WAV 16-bit LE
+                            estereo @ 55.555 Hz. El recording dura tanto como
+                            la simulación (un frame ≈ 925 muestras).
+  --trace-audio-io          Activa logs de IO del Z80 al bus de sonido.
+                            Verlos con RUST_LOG=neogeo_core::audio=trace.
+
+Simulación de mandos / monedero (para llegar a gameplay sin SDL):
+
+  --auto-coin-frame N           Inserta una moneda en P1 en el frame N.
+  --coin-hold-frames N          Mantiene la moneda pulsada N frames (default 8).
+  --auto-press-start-frame N    Pulsa START en P1 en el frame N.
+  --press-hold-frames N         Mantiene START pulsado N frames (default 4).
+
+--------------------------------------------------------------------------------
+4. VOLCADO DE FRAMES A PNG
+--------------------------------------------------------------------------------
+
+Sin dependencias externas. Volcamos 28 frames de Metal Slug, uno cada 50:
+
+    mkdir -p frames-out
+    ./target/release/neogeo --cart mslug.zip \
+        --hardware mvs \
+        --max-frames 1380 \
+        --dump-every-frames 50 \
+        --dump-frames-dir frames-out/
+
+Cada frame queda como `frame-00000.png`, `frame-00050.png`, … en RGBA
+320×224 (~280 KiB cada uno, con encoder PNG mínimo y sin dependencias).
+
+Al terminar el run, el emulador imprime un diagnóstico de VRAM:
+
+    VRAM diagnostics: fix-cells set=1280/1280, palette entries set=4896/4096,
+                      sprite SCB3 entries set=108/381
+
+así puedes ver si la BIOS / el juego ya escribieron el tilemap, las
+paletas y los sprites.
+
+--------------------------------------------------------------------------------
+5. → COMANDO RECOMENDADO PARA CORRER METAL SLUG (v18)
+--------------------------------------------------------------------------------
+
+Este es el comando que verifica TODO de un golpe: arranque, attract,
+pantalla de título, captura de PNG y volcado WAV del YM2610:
+
+    mkdir -p frames-mslug
+    ./target/release/neogeo \
+        --cart mslug.zip --hardware mvs \
+        --max-frames 3500 \
+        --auto-coin-frame 200 --auto-press-start-frame 300 \
+        --dump-every-frames 500 --dump-frames-dir frames-mslug/ \
+        --audio-out mslug.wav
+
+Qué verás en `frames-mslug/`:
+  - frame-00000..01000: pantalla de bienvenida del UNI-BIOS y la búsqueda
+    de BIOS.
+  - frame-01500: pantalla de título "METAL SLUG / SUPER VEHICLE-001".
+  - frame-02500..03000: ATTRACT DEMO en gameplay activo (Marco corriendo
+    por la calle del nivel 1, explosiones, IN-prompt sobre el tanque).
+
+Verificación del audio (auto-self-test del FM en aislamiento):
+
+    cargo build --release -p neogeo-core --example fm_test
+    ./target/release/examples/fm_test
+    # → imprime: peak=1151 non-zero=99% (en /tmp/fm_test.wav)
+
+Este self-test prueba que el chip FM funciona, independiente del juego.
+
+Qué esperar:
+  - 1.800 frames procesados en ~2,1 s (≈ 850 fps simulados).
+  - 12 PNG en frames-mslug/ desde el splash de UNI-BIOS hasta la
+    pantalla de título "SUPER VEHICLE-001 / METAL SLUG / © 1996 NAZCA".
+  - mslug.wav de 30 s con la salida del YM2610 (silencioso mientras
+    FM no esté implementado — ADPCM-A/B y SSG sí sonarán cuando el
+    juego los dispare en gameplay real).
+  - Log final con "VRAM diagnostics: fix-cells set=1280/1280, palette
+    entries set=4919/4096, sprite SCB3 entries set=108/381".
+
+Variantes útiles:
+
+    # Boot rápido sin auto-input (sólo attract + BIOS):
+    ./target/release/neogeo --cart mslug.zip --hardware mvs \
+        --max-frames 600 --dump-every-frames 100 \
+        --dump-frames-dir frames-attract/
+
+    # Forzar UNI-BIOS específico (override del .zip):
+    ./target/release/neogeo --bios uni-bios_2_3.rom \
+        --cart mslug.zip --hardware mvs --max-frames 1800 \
+        --dump-every-frames 150 --dump-frames-dir frames/
+
+    # Inspeccionar el tráfico Z80-YM2610 (muy verboso):
+    RUST_LOG=neogeo_core::audio=trace,info \
+        ./target/release/neogeo --cart mslug.zip --hardware mvs \
+        --max-frames 100 --trace-audio-io 2>&1 | head -50
+
+--------------------------------------------------------------------------------
+5b. EJEMPLO: LLEGAR A GAMEPLAY EN METAL SLUG SIN TECLADO
+--------------------------------------------------------------------------------
+
+Sin SDL ni input real, podemos llegar al "P1 PUSH START" → gameplay
+inyectando los pulsos de moneda y start:
+
+    mkdir -p frames-gp
+    ./target/release/neogeo --cart mslug.zip --hardware mvs \
+        --max-frames 2000 \
+        --auto-coin-frame 200 \
+        --auto-press-start-frame 300 \
+        --dump-every-frames 100 \
+        --dump-frames-dir frames-gp/
+
+A partir del frame ~1500 verás el logo de Metal Slug y, hacia el
+frame ~1900, la pantalla de gameplay con el personaje y el cuartel.
+
+--------------------------------------------------------------------------------
+6. NIVELES DE LOG
+--------------------------------------------------------------------------------
+
+Controla los logs con la variable RUST_LOG:
+
+    # Sólo banner de info (default)
+    RUST_LOG=info ./target/release/neogeo --cart mslug.zip --max-frames 1
+
+    # Eventos importantes: VBlank, IRQ taken, NEO-D0 swap, watchdog
+    RUST_LOG=neogeo_core=debug,m68k::cpu=debug \
+        ./target/release/neogeo --cart mslug.zip --max-frames 200
+
+    # Trace de I/O al bus ($300000 / $380000 etc.)
+    RUST_LOG=neogeo_core::bus=trace \
+        ./target/release/neogeo --cart mslug.zip --max-frames 50 | head -50
+
+    # Trace completo de instrucciones (MUY verboso, sólo trozos pequeños)
+    RUST_LOG=neogeo_core::system=trace,info \
+        ./target/release/neogeo --cart mslug.zip --max-instructions 200 \
+            --trace-cpu
+
+--------------------------------------------------------------------------------
+7. TESTS — SUITE SINGLESTEP DEL Z80 (NUEVO en v15/v16)
+--------------------------------------------------------------------------------
+
+El crate `z80` se valida contra el corpus
+[SingleStepTests/z80](https://github.com/SingleStepTests/z80)
+(1.604 ficheros JSON, 1.000 tests cada uno = 1,604,000 sub-tests).
+
+    # 1) Clonar el corpus (~1.6 GB)
+    git clone --depth=1 https://github.com/SingleStepTests/z80.git \
+        /tmp/SingleStepTests-z80
+
+    # 2) Ejecutar todas las tablas en una corrida
+    Z80_TESTS_DIR=/tmp/SingleStepTests-z80 \
+        cargo test --release -p z80 --test single_step_tests -- --nocapture
+
+Para iterar sobre una tabla concreta, usa Z80_PREFIX:
+
+    # Sólo opcodes principales (sin prefijo): 252 ficheros
+    Z80_TESTS_DIR=/tmp/SingleStepTests-z80 Z80_PREFIX=main \
+        cargo test --release -p z80 --test single_step_tests -- --nocapture
+
+    # Sólo CB:    256 ficheros (rotates / shifts / BIT / SET / RES)
+    # Sólo ED:     80 ficheros (block ops, IM, IN/OUT, LDI/CPI…)
+    # Sólo DD/FD: 252 ficheros (IX / IY)
+    # Sólo DDCB/FDCB: 256 ficheros (rotates/BIT sobre (IX+d)/(IY+d))
+
+Para acotar más:
+
+    Z80_OPCODES=00,01,06,08 \
+        cargo test --release -p z80 --test single_step_tests -- --nocapture
+
+Resultado esperado v16: **1,604,000 / 1,604,000 → 100.00 %**.
+
+--------------------------------------------------------------------------------
+8. TESTS — SUITE SINGLESTEP DEL M68000
+--------------------------------------------------------------------------------
+
+El crate `m68k` se valida contra
+[SingleStepTests/m68000](https://github.com/SingleStepTests/m68000)
+(127 ficheros .json.bin de 2.500 tests cada uno = 317.500 sub-tests).
+
+    # 1) Clonar el corpus (~180 MB comprimidos)
+    git clone --depth=1 https://github.com/SingleStepTests/m68000.git \
+        /tmp/m68000
+
+    # 2) Decodificar los .json.bin → .json (sólo Python 3, ~20 s)
+    cd /tmp/m68000 && python3 decode.py
+    cd -
+
+    # 3) Ejecutar el corpus completo (~8 s en release)
+    M68K_TESTS_DIR=/tmp/m68000 \
+        cargo test --release -p m68k --test single_step_tests -- --nocapture
+
+Output esperado:
+
+    SingleStepTests/m68000: 317500/317500 (100.00%) across 127 files
+    test corpus_m68000 ... ok
+
+Para iterar sobre opcodes concretos:
+
+    # Sólo dos ficheros
+    M68K_TESTS_DIR=/tmp/m68000 M68K_OPCODES=ADD.b,DIVU \
+        cargo test --release -p m68k --test single_step_tests -- --nocapture
+
+    # Sólo los primeros 200 tests de cada fichero (iteración rápida)
+    M68K_TESTS_DIR=/tmp/m68000 M68K_LIMIT=200 \
+        cargo test --release -p m68k --test single_step_tests -- --nocapture
+
+Notas técnicas del runner:
+- El PC del JSON está "post-prefetch" (apunta a opcode + 4).
+  El runner lo traduce a nuestro modelo (PC en la siguiente palabra a
+  fetchar) usando `our_pc + 4 == json.final.pc`.
+- La excepción de TRACE se suprime durante el test (`cpu.no_trace =
+  true`) porque MAME la difiere al siguiente boundary; el JSON registra
+  el estado *antes* de que dispare. Fuera del runner, TRACE funciona
+  normalmente.
+
+--------------------------------------------------------------------------------
+9. EJEMPLOS PRÁCTICOS
+--------------------------------------------------------------------------------
+
+# Boot rápido (atract) de Metal Slug, 28 frames:
+./target/release/neogeo --cart mslug.zip --hardware mvs \
+    --max-frames 1380 --dump-every-frames 50 \
+    --dump-frames-dir frames/
+
+# Llegar a gameplay sin teclado (auto-coin + auto-start):
+./target/release/neogeo --cart mslug.zip --hardware mvs \
+    --max-frames 2000 \
+    --auto-coin-frame 200 --auto-press-start-frame 300 \
+    --dump-every-frames 100 --dump-frames-dir frames-gp/
+
+# Boot con BIOS oficial asia-s3.rom:
+./target/release/neogeo --bios asia-s3.rom --cart mslug.zip \
+    --hardware mvs --max-frames 1500 \
+    --dump-every-frames 200 --dump-frames-dir frames/
+
+# Trace de las primeras 100 instrucciones del BIOS:
+RUST_LOG=neogeo_core::system=trace,info \
+    ./target/release/neogeo --cart mslug.zip \
+    --hardware mvs --max-instructions 100 --trace-cpu 2>&1 | head -110
+
+# Recuento de VBlank IRQs procesadas durante un arranque:
+RUST_LOG=neogeo_core=debug,m68k::cpu=debug \
+    ./target/release/neogeo --cart mslug.zip --hardware mvs \
+    --max-frames 200 2>&1 | grep -c "IRQ level 1 taken"
+
+# Workspace completo (todos los tests excepto los SingleStep corpora,
+# que sólo se ejecutan si M68K_TESTS_DIR / Z80_TESTS_DIR están seteados):
+cargo test --release --tests
+
+--------------------------------------------------------------------------------
+10. ARQUITECTURA / ARCHIVOS
+--------------------------------------------------------------------------------
+
+  Cargo.toml                         Workspace raíz.
+  CHANGES_v12.md / v14.md / v16.md   Changelog por release.
+  USO.txt                            Esta guía.
+
+  crates/m68k/                       CPU 68000 (100% SingleStepTests).
+    src/cpu.rs        Registers, SR, exceptions, push/pop, jump_to.
+    src/decoder.rs    Tabla de opcodes y desambiguación.
+    src/ea.rs         Effective Address (8 modos + extension words).
+    src/exec.rs       Ejecutor de cada instrucción.
+    src/bus.rs        Trait `Bus` + `FlatBus` (16 MiB lineal para tests).
+    tests/instructions.rs             15 tests manuales (cobertura inicial).
+    tests/flags_and_exceptions.rs     13 tests manuales (ILLEGAL, TAS, etc).
+    tests/single_step_tests.rs        Runner del corpus SingleStepTests.
+
+  crates/z80/                        CPU Z80 (100% SingleStepTests).
+    src/cpu.rs        Registers (A, F, BC, DE, HL, IX, IY, SP, PC, I, R,
+                      IFF1, IFF2, IM, Q, WZ), bus trait.
+    src/flags.rs      Tablas SZ, SZ53, parity, half-carry, overflow, DAA.
+    src/exec.rs       Tablas main / CB / ED / DD / FD / DDCB / FDCB
+                      con Q tracking y WZ exactos.
+    tests/single_step_tests.rs        Runner del corpus SingleStepTests.
+
+  crates/neogeo-core/                Sistema Neo Geo.
+    src/bus.rs                       Memory map, NEO-D0, watchdog, io_control.
+    src/lspc.rs                      LSPC-A2: VRAM port, timer, VBlank IRQ.
+    src/upd4990a.rs                  uPD4990A RTC con comandos 0x00-0x07.
+    src/rom.rs                       ROM loader (zip + dir + single file).
+    src/system.rs                    Glue 68K + bus + LSPC + RTC + watchdog.
+    src/video.rs                     Renderer: fix layer + sprite layer +
+                                     palette LUT + pre-decoder + PNG encoder.
+    src/ym2610.rs                    YM2610 stub (pendiente para v17).
+    tests/boot.rs                    Cartucho sintético escribiendo a Work RAM.
+    tests/video_decoder.rs           Pre-decoder vs on-the-fly (byte-idéntico).
+    tests/video_palette.rs           Palette LUT vs MAME.
+    tests/video_sprites.rs           SCB3 Y-decoding, sprite-on-scanline.
+
+  crates/neogeo-cli/                 Frontend de línea de comandos.
+    src/main.rs                      Binario `neogeo`, flags de CLI,
+                                     auto-coin / auto-press, dump PNG.
+    src/bin/dump_sprites.rs          Utilidad de debug para volcar C-ROMs.
+
+--------------------------------------------------------------------------------
+11. ROADMAP
+--------------------------------------------------------------------------------
+
+Cosas pendientes (en orden aproximado de prioridad):
+
+  1. Conectar el Z80 al bus de sonido:
+     - Latch de comandos en $320000 (escritura del 68K)
+     - NMI line, banking del M1 ROM (0x000000-0x7FFF + bancos)
+     - IRQ del YM2610 hacia el Z80.
+
+  2. YM2610 funcional:
+     - SSG (3 canales de cuadrada + envelope + noise, derivado del AY-3-8910).
+     - ADPCM-A (6 canales de muestras V-ROMs).
+     - ADPCM-B (1 canal de stream V-ROMs).
+     - Mezclador y output a WAV / SDL_audio.
+
+  3. Layer bank-switching (Garou / MS3 / KOF2000):
+     - 22-bit tile numbers via $2FFFF8/A.
+
+  4. Shadow plane (sprite shadow flag de MAME).
+
+  5. Cycle-exact bus transactions del 68000 (validar el campo
+     `transactions[]` de los SingleStepTests, no sólo el estado final).
+
+  6. Driver SDL2 para teclado/joypad y salida de audio en tiempo real.
+
+================================================================================
+                                  Fin
+================================================================================
+
+==========================================================================
+v21 — Metal Slug 2 y otros sets MAME split (BIOS separado)
+==========================================================================
+
+Para arrancar un cart MAME split (mslug2, kof, garou…) donde el BIOS,
+000-lo.lo, sfix.sfix y sm1.sm1 viven en `neogeo.zip` aparte:
+
+  ./neogeo --bios-zip /ruta/a/neogeo.zip \
+           --cart    /ruta/a/mslug2.zip \
+           --hardware mvs \
+           --ui
+
+Para forzar un BIOS concreto:
+
+  ./neogeo --bios-zip /ruta/a/neogeo.zip \
+           --bios-name uni-bios_4_0.rom \
+           --cart /ruta/a/mslug.zip --ui
+
+Notas
+-----
+- `--bios-zip` se procesa ANTES del cart, por lo que cualquier
+  s1/m1/p1 que traiga el cart sigue ganando sobre los fallbacks BIOS.
+- Si tu cart all-in-one ya trae el BIOS dentro (mslug.zip), simplemente
+  usa `--cart` y deja `--bios-zip` fuera. Sigue funcionando igual.
+- Auto-pick prefiere BIOSes oficiales SNK con SYSTEM_IO documentado
+  (asia-s3 / sp-s3 / sp-s2). Headless coin/start automatizado solo
+  funciona limpio con esos. Universe BIOS también arranca pero no
+  se garantiza el flujo automatizado.
+
+Fix overscan
+------------
+Cols 0 y 39 del fix layer ya no se dibujan por defecto, igual que el
+modo 304-px de FBNeo. Si quieres ver las 40 columnas como hace MAME
+(con basura de bezel visible), edita
+`crates/neogeo-core/src/video.rs::FIX_LAYER_OVERSCAN_COLS = 0` y
+recompila.

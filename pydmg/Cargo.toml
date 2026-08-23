@@ -1,0 +1,63 @@
+[package]
+name = "pydmg-neogeo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["pydmg-neogeo contributors"]
+description = "Neo Geo emulator core, reorganised from neogeo-rs v31 into a single modular crate"
+
+# ---------------------------------------------------------------------------
+#   Layout
+#
+#   Núcleo (siempre disponible):
+#     lib   → neogeo/lib.rs   — librería con audio/cpu/graphics/memory/neogeo.
+#
+#   Binario y examples:
+#     bin "pydmg-neogeo"     → cli/main.rs       (incluye GUI SDL2)
+#     example "dump_sprites" → examples/dump_sprites.rs
+#     example "fm_test"      → examples/fm_test.rs
+#
+#   Frontend SDL2 incluido siempre (igual que neogeo-rs v30/v31). Un único
+#   `cargo build --release` genera el ejecutable con GUI fullscreen. La
+#   librería SDL2 debe estar disponible al linkar:
+#     · Linux:   sudo apt install libsdl2-dev
+#     · Windows: cabeceras + lib de https://github.com/libsdl-org/SDL/releases
+#                y SDL2.dll junto al .exe en runtime.
+# ---------------------------------------------------------------------------
+
+[lib]
+name = "pydmg_neogeo"
+path = "neogeo/lib.rs"
+
+[[bin]]
+name = "pydmg-neogeo"
+path = "cli/main.rs"
+
+[[example]]
+name = "fm_test"
+path = "examples/fm_test.rs"
+
+[[example]]
+name = "dump_sprites"
+path = "examples/dump_sprites.rs"
+
+[dependencies]
+log = "0.4"
+thiserror = "2.0"
+anyhow = "1.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+once_cell = "1.21"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+sdl2 = "0.38"
+
+[dev-dependencies]
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
