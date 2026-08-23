@@ -54,7 +54,12 @@ impl Default for SystemConfig {
 // reaches the speaker, ymfm uses master/144 = 55_555 Hz on 8 MHz YM2610,
 // which is what we target with `step_one_sample`.
 
-const M68K_CYCLES_PER_FRAME: u64 = 200_000; // ≈ 12 MHz / 60 Hz
+/// Exact 68K cycles per video frame.
+///
+/// MAME timing: pixel clock = MASTER/4 = 6 MHz, HTOTAL = 384, VTOTAL = 264.
+/// Frame = 384*264 px / 6 MHz = 16.896 ms → 12 MHz × 0.016896 = **202 752**
+/// 68K cycles (59.1856 Hz — the real cabinet rate, not 60 Hz).
+const M68K_CYCLES_PER_FRAME: u64 = 202_752;
 const Z80_CYCLES_NUM: u64 = 1; // Z80 cycles per 3 × 68K cycles
 const Z80_CYCLES_DEN: u64 = 3;
 const YM_OUTPUT_HZ: u64 = 55_555;
@@ -189,6 +194,11 @@ impl System {
         if !romset.cart.m_rom.is_empty() {
             self.audio.install_m1(romset.cart.m_rom);
         }
+        // SM1 (BIOS Z80 program) is a *separate* bank-mux entry, selected
+        // at runtime by HC259 Q5 = 0 — install it alongside the cart M1.
+        if !romset.sm1.is_empty() {
+            self.audio.install_sm1(romset.sm1);
+        }
         if !romset.cart.v_roms.is_empty() {
             self.audio.ym.install_v_roms(&romset.cart.v_roms);
         }
@@ -295,6 +305,16 @@ impl System {
         self.z80_cycles_owed += cycles as i64 * Z80_CYCLES_NUM as i64;
         let mut z80_budget = self.z80_cycles_owed / Z80_CYCLES_DEN as i64;
         self.z80_cycles_owed -= z80_budget * Z80_CYCLES_DEN as i64;
+
+        // Sync HC259 Q5 (use_cart_audio) → Z80 main-bank mux. MAME:
+        // `set_use_cart_audio(state)` → `m_bank_audio_main->set_entry(state)`.
+        // Only meaningful when an SM1 is resident; otherwise the AudioBus
+        // falls back to M1 regardless.
+        let q5 = (self.bus.systemlatch & 0x20) != 0;
+        if q5 != self.audio.use_cart_audio {
+            log::debug!("use_cart_audio {} -> {} (HC259 Q5)", self.audio.use_cart_audio, q5);
+            self.audio.use_cart_audio = q5;
+        }
 
         // Sync soundlatch pending → Z80 NMI.
         if self.bus.sound_latch_pending {

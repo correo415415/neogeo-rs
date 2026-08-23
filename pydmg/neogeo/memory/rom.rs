@@ -35,6 +35,10 @@ pub struct Cartridge {
     /// `*.v` / single-file V-ROM = shared blob for both).
     pub v_roms: Vec<(String, Vec<u8>)>,
     pub c_roms: Vec<Vec<u8>>,
+    /// SMA protection chip ROM (`*-sma.*`, e.g. `251-sma.kc` for KOF99).
+    /// MAME maps it at $0C0000-$0FFFFF of the P space; the first $C0000
+    /// bytes are open bus. Consumed by the SMA protection layer.
+    pub sma_rom: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +49,11 @@ pub struct RomSet {
     /// `(zoom_y << 8) | zoom_line` → `(tile_index << 4) | sprite_y`.
     /// Used by the sprite renderer for vertical scaling.
     pub lo_rom: Vec<u8>,
+    /// BIOS audio Z80 program (`sm1.sm1`, 128 KiB). Mapped into the Z80
+    /// main bank when HC259 Q5 (`use_cart_audio`) is 0. Kept separate from
+    /// `cart.m_rom` so the Z80 bank mux can switch between them at runtime,
+    /// exactly like MAME's `m_bank_audio_main->set_entry(use_cart_audio)`.
+    pub sm1: Vec<u8>,
     /// BIOS fix-layer S-ROM (`sfix.sfix`, 128 KiB).
     ///
     /// Kept separate from `cart.s_rom` so the renderer can honour the
@@ -71,6 +80,30 @@ struct CategorisedFiles {
     bios_candidates: Bucket,
     /// 000-lo.lo — hardware Y-zoom lookup ROM, plucked from the zip.
     lo_rom: Vec<u8>,
+    /// SMA protection-chip ROM (`*-sma.*`), if present in the set.
+    sma: Vec<u8>,
+}
+
+/// Return true when the first 8 bytes of `d` look like a plausible 68000
+/// reset vector pair for a Neo Geo cart:
+///   * initial SSP (long 0) must point into work RAM ($10xxxx) and be even;
+///   * initial PC (long 1) must be even and inside the mapped P space
+///     (either the cart at <$300000 or the BIOS at $C0xxxx).
+///
+/// Used to detect the MAME `ROM_LOAD16_WORD_SWAP(..., 0x100000) +
+/// ROM_CONTINUE(0x000000)` layout on single 2 MiB P-ROM files without
+/// relying on a per-set table.
+fn plausible_vector_table(d: &[u8]) -> bool {
+    if d.len() < 8 {
+        return false;
+    }
+    let ssp = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
+    let pc = u32::from_be_bytes([d[4], d[5], d[6], d[7]]);
+    let ssp_ok = ssp != 0 && ssp != 0xFFFF_FFFF && (ssp & 1) == 0
+        && (0x0010_0000..=0x0011_0000).contains(&ssp);
+    let pc_ok = pc != 0 && pc != 0xFFFF_FFFF && (pc & 1) == 0
+        && (pc < 0x0030_0000 || (0x00C0_0000..0x00C2_0000).contains(&pc));
+    ssp_ok && pc_ok
 }
 
 impl RomSet {
@@ -172,9 +205,16 @@ impl RomSet {
                 self.cart.s_rom = d;
             }
         }
-        if self.cart.m_rom.is_empty() {
-            if let Some((_, d)) = bucket.m.into_iter().next() {
-                log::info!("Using BIOS fallback audio M-ROM (sm1.sm1, {} bytes)", d.len());
+        // Capture sm1.sm1 into its own slot — the Z80 main-bank multiplexer
+        // (HC259 Q5 = use_cart_audio) switches between SM1 and the cart M1
+        // at runtime, so both must be resident simultaneously (MAME
+        // `m_bank_audio_main`). We ALSO keep the legacy fallback of copying
+        // it into `cart.m_rom` when the cart has no M1 of its own.
+        if let Some((_, d)) = bucket.m.into_iter().next() {
+            log::info!("BIOS SM1 captured: {} bytes (Z80 main-bank mux entry 0)", d.len());
+            self.sm1 = d.clone();
+            if self.cart.m_rom.is_empty() {
+                log::info!("  cart.m_rom empty → falling back to SM1 for cart slot");
                 self.cart.m_rom = d;
             }
         }
@@ -320,26 +360,24 @@ impl RomSet {
         //   ROM_LOAD16_WORD_SWAP("201-p1.p1", 0x100000, 0x100000)
         //   ROM_CONTINUE(0x000000, 0x100000)
         //
-        // We detect it by looking at a single 2 MiB P-ROM file: if its
-        // first 1 MiB is mostly zeros and the second 1 MiB looks like a
-        // valid 68k vector table (high byte of the first long looks like
-        // an SSP in cart RAM, e.g. `$00xxxxxx`), we apply the swap.
+        // Detection (robust, no per-set table): on a single 2 MiB P-ROM
+        // file, decode the 68000 reset vectors (SSP + PC, big-endian after
+        // un-byteswap) at offset 0 and at offset $100000 and keep whichever
+        // half carries a *plausible* vector table at the bus base. On-disk
+        // data is byte-swapped per 16-bit word, so swap before inspecting.
         if bucket.p.len() == 1 && bucket.p[0].1.len() == 0x200000 {
             let (pname, mut d) = bucket.p.remove(0);
-            // Check the very first 16 bytes ($0000-$000F = SSP+PC vector
-            // in a normal cart). If those are zero but offset $100000
-            // contains a plausible vector (high byte 0x00 or 0x10
-            // indicating a RAM/work-RAM SSP, and second longword starts
-            // with 0xC0 for a BIOS-mapped reset), it's the MAME
-            // ROM_CONTINUE swap pattern (mslug, mslug2, ...).
-            let upper_has_code = !d[0x100000..0x100010].iter().all(|&b| b == 0);
-            let lower_is_empty = d[0x000000..0x000010].iter().all(|&b| b == 0);
+            let be = |src: &[u8]| -> [u8; 8] {
+                // Undo the on-disk word byte-swap for the 8 vector bytes.
+                [src[1], src[0], src[3], src[2], src[5], src[4], src[7], src[6]]
+            };
+            let lower_ok = plausible_vector_table(&be(&d[0x000000..0x000008]));
+            let upper_ok = plausible_vector_table(&be(&d[0x100000..0x100008]));
             log::debug!(
-                "P-ROM swap check: file_size={}, lower_empty={}, upper_has_code={}, lower[0..16]={:02X?}, upper[0..16]={:02X?}",
-                d.len(), lower_is_empty, upper_has_code,
-                &d[0..16], &d[0x100000..0x100010],
+                "P-ROM swap check '{}': lower_vec_ok={} upper_vec_ok={}",
+                pname, lower_ok, upper_ok
             );
-            if upper_has_code && lower_is_empty {
+            if upper_ok && !lower_ok {
                 log::info!(
                     "Cart '{}' has swapped P-ROM layout (MAME ROM_CONTINUE pattern) -- swapping 1 MiB halves",
                     pname
@@ -354,6 +392,10 @@ impl RomSet {
             for (_, mut d) in bucket.p {
                 cart.p_rom.append(&mut d);
             }
+        }
+        if !bucket.sma.is_empty() {
+            log::info!("Cart carries an SMA protection ROM ({} bytes)", bucket.sma.len());
+            cart.sma_rom = bucket.sma;
         }
         // Pick the s-rom. We tagged BIOS-provided sfix.sfix fallbacks with
         // the name `~bios-sfix.sfix`, which sorts last; cart-supplied
@@ -443,6 +485,13 @@ fn categorise(fname: String, data: Vec<u8>, out: &mut CategorisedFiles) {
     // for proper vertical sprite scaling.
     if n == "000-lo.lo" || n == "000-lo.bin" {
         out.lo_rom = data;
+        return;
+    }
+    // SMA protection-chip ROM: MAME names them `<id>-sma.<tag>` (e.g.
+    // `251-sma.kc` for KOF99, `250-sma.kd` for Metal Slug 3). Capture into
+    // a dedicated bucket — the protection layer maps it at $0C0000.
+    if n.contains("-sma.") || n.starts_with("sma.") {
+        out.sma = data;
         return;
     }
     // `sfix.sfix` is the BIOS fix-tile S-ROM. When the cart's own `s_rom`

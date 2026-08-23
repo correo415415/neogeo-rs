@@ -64,8 +64,9 @@ pub struct NeoGeoBus {
     pub upd4990a: Upd4990a,
     /// Active P-ROM bank for the $200000-$2FFFFF window.
     /// Byte offset into the cart P-ROM that the bus $200000-$2FFFFF window
-    /// currently maps to. Set by writes to that window (FBNeo Bankswitch).
-    /// Default at reset: $100000 (the upper MiB) for carts > 1 MiB.
+    /// currently maps to. Set by writes to $2FFFF0-$2FFFFF (MAME
+    /// `write_banksel`). Default at reset: $100000 (the upper MiB) for
+    /// carts > 1 MiB, 0 for carts ≤ 1 MiB (MAME `init_cpu`).
     pub p_rom_bank_offset: usize,
     /// Whether the SYSTEM ROM is mapped at $000000 (true at reset, on MVS the
     /// BIOS-mapped reset is replaced by the cartridge once REG_SWPBIOS is
@@ -199,6 +200,10 @@ impl NeoGeoBus {
             chunk.swap(0, 1);
         }
         self.p_rom = data;
+        // Re-initialise the $200000 bank window per MAME `init_cpu`:
+        // carts > 1 MiB point the window at the second MiB; smaller carts
+        // leave it at 0 (the window mirrors the base ROM).
+        self.p_rom_bank_offset = if self.p_rom.len() > 0x100000 { 0x100000 } else { 0 };
     }
 
     /// Read one byte by following the Neo Geo memory map. This is the
@@ -250,11 +255,10 @@ impl NeoGeoBus {
                 }
             }
             0x200000..=0x2FFFFF => {
-                // FBNeo Bankswitch: bus $200000-$2FFFFF maps to the *upper*
-                // 1 MiB of the cart, banked. The bank register stores the
-                // bus-relative offset already-clamped to ROM size.
-                // For carts <= 1 MiB, the bank window is unused; for carts
-                // > 1 MiB the bank window starts at offset $100000.
+                // Bank window: bus $200000-$2FFFFF maps 1 MiB of the cart
+                // P-ROM selected by the banksel register. For carts ≤ 1 MiB
+                // the offset is 0 so the window mirrors the base ROM (MAME
+                // `init_cpu` behaviour).
                 let cart_off = self.p_rom_bank_offset + ((a as usize) & 0xFFFFF);
                 *self.p_rom.get(cart_off).unwrap_or(&0xFF)
             }
@@ -327,22 +331,32 @@ impl NeoGeoBus {
                 // them silently.
             }
             0x200000..=0x2FFFFF => {
-                // FBNeo standard bankswitch (no SMA/PVC protection):
-                //   nBank = 0x100000 + ((value & 7) << 20)
-                //   if nBank >= cart_size: nBank = 0x100000  (clamp)
-                // This maps to the *upper* MiB of the cart at the
-                // $200000-$2FFFFF window.
-                let raw = (value as usize) & 7;
-                let mut bank_off = 0x100000usize + (raw << 20);
-                if bank_off >= self.p_rom.len() {
-                    bank_off = 0x100000;
-                }
-                if bank_off != self.p_rom_bank_offset {
-                    self.p_rom_bank_offset = bank_off;
-                    log::trace!(
-                        "P-ROM bank: req={} -> ROM offset ${:08X}",
-                        value, bank_off
-                    );
+                // Standard cart bankswitch register. MAME maps the banksel
+                // write handler ONLY at $2FFFF0-$2FFFFF (`set_slot_idx`:
+                // `install_write_handler(0x2ffff0, 0x2fffff, write_banksel)`);
+                // the rest of the window is read-only ROM. Restricting the
+                // decode is important for protected carts, whose protection
+                // RAM/registers also live inside this window ($2FE000+ for
+                // PVC, $2FFFF0+ for SMA) and must NOT double as banksel.
+                if a >= 0x2FFFF0 {
+                    // MAME `write_banksel`:
+                    //   bank = data & 0x07;
+                    //   if ((bank + 1) * 0x100000 >= len) bank = 0;
+                    //   bank_base = (bank + 1) * 0x100000;
+                    let mut bank = (value as usize) & 7;
+                    if (bank + 1) * 0x100000 >= self.p_rom.len() {
+                        bank = 0;
+                    }
+                    let bank_off = (bank + 1) * 0x100000;
+                    if bank_off != self.p_rom_bank_offset {
+                        self.p_rom_bank_offset = bank_off;
+                        log::trace!(
+                            "P-ROM bank: req={} -> ROM offset ${:08X}",
+                            value, bank_off
+                        );
+                    }
+                } else {
+                    log::trace!("write to P-ROM bank window ${a:06X} = ${value:02X} (ignored)");
                 }
             }
             0x300000..=0x3FFFFF => self.io_write8(a, value),
