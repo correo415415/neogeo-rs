@@ -685,11 +685,18 @@ mod prot_tests {
         for off in [0u32, 2, 4, 6] {
             assert_eq!(p1.protection_r(off), p2.protection_r(off));
         }
-        // Loading all-ones data must produce set taps in the low half.
+        // Trace a known load through the chip. protection_w(0x1, 0xFFFF):
+        // LOAD=1 (offset bit0), address part = bits(1,3,16) = 0, data part
+        // = bitswap16(0xFFFF) = 0xFFFF → SR latches 0x0000FFFF.
+        // protection_r(0x0): EVEN=0, H=0 →
+        //   gbd = SR taps [25,17,9,1] = 0,0,1,1 = 3
+        //   gad = SR taps [24,16,8,0] = 0,0,1,1 = 3
+        //   result = (gbd&3)<<6 | (gbd>>2)<<4 | (gad&3)<<2 | (gad>>2)
+        //          = 0xC0 | 0x00 | 0x0C | 0x00 = 0xCC
         let mut p = FatFury2Prot::new();
-        p.protection_w(0x1, 0xFFFF); // offset bit0 = LOAD, all data bits on
+        p.protection_w(0x1, 0xFFFF);
         let r = p.protection_r(0x0);
-        assert_eq!(r & 0xFF, 0xFF, "all-ones load must read back set nibbles");
+        assert_eq!(r, 0xCC, "traced PRO-CT0 output for SR=0x0000FFFF");
     }
 
     #[test]
