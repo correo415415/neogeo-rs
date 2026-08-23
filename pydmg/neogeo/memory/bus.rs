@@ -189,6 +189,10 @@ impl NeoGeoBus {
                         |addr| *p_rom.get(addr as usize).unwrap_or(&0),
                         select_word,
                     );
+                    log::trace!(
+                        "mslugx prot_r ${a:06X} cmd={:04X} sel={select_word:04X} -> {r:04X}",
+                        p.command
+                    );
                     Some(r)
                 } else {
                     None
@@ -741,6 +745,20 @@ impl Bus for NeoGeoBus {
         let a = addr & 0x00FF_FFFF;
         if (0x3C0000..=0x3C00FE).contains(&a) {
             self.lspc.read_register_word(a as u16)
+        } else if (0x200000..=0x2FFFFF).contains(&a) {
+            // Protection devices are 16-bit and often *stateful* per
+            // access (mslugx bitstream counter, SMA LFSR). A word read
+            // must hit the device exactly ONCE — splitting it into two
+            // byte reads would advance the state twice and hand the
+            // game a mangled bit stream (mslugx then boots into the
+            // "WARNING: THIS ROM CARTRIDGE..." screen forever).
+            if let Some(w) = self.prot_read16(a & !1) {
+                w
+            } else {
+                let hi = u16::from(self.read_phys8(addr));
+                let lo = u16::from(self.read_phys8(addr.wrapping_add(1)));
+                (hi << 8) | lo
+            }
         } else {
             let hi = u16::from(self.read_phys8(addr));
             let lo = u16::from(self.read_phys8(addr.wrapping_add(1)));
