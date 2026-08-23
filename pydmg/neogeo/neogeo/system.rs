@@ -162,7 +162,7 @@ impl System {
     }
 
     /// Load ROMs into the bus and reset both CPUs.
-    pub fn load(&mut self, romset: RomSet) -> Result<()> {
+    pub fn load(&mut self, mut romset: RomSet) -> Result<()> {
         if !romset.bios.is_empty() {
             self.bus.load_system_rom(romset.bios);
         }
@@ -223,6 +223,45 @@ impl System {
         self.s_rom = romset.cart.s_rom;
         self.bios_sfix = romset.bios_sfix;
         self.c_roms = romset.cart.c_roms;
+        // ==== NEO-CMC42/CMC50 graphics (and M1) decryption ====
+        // Encrypted carts store the sprite data scrambled and carve the
+        // S (fix) tiles out of the end of the C data; CMC50 carts also
+        // encrypt the Z80 M1 program. All of this must happen *before*
+        // decode_sprite_gfx / install_m1 consume the data.
+        if let Some(cmc) = crate::memory::cmc::detect_cmc(&romset.cart.name) {
+            log::info!(
+                "NEO-CMC cart '{}': {:?} extra_xor={:#04x} sfix={:#x}",
+                romset.cart.name, cmc.variant, cmc.extra_xor, cmc.sfix_bytes,
+            );
+            // Build the interleaved sprite region MAME's tables expect
+            // (c1 even bytes / c2 odd bytes, then c3/c4, ...).
+            let mut region = crate::memory::cmc::interleave_c_roms(&self.c_roms);
+            if !region.is_empty() {
+                if !(region.len() / 4).is_power_of_two()
+                    && region.len() != 0x300_0000
+                    && region.len() != 0x600_0000
+                {
+                    log::warn!(
+                        "CMC sprite region size {:#x} is not a power of two — address descramble may clamp incorrectly",
+                        region.len()
+                    );
+                }
+                cmc.gfx_decrypt(&mut region);
+                // S data lives at the end of the decrypted C data.
+                self.s_rom = cmc.sfix_extract(&region);
+                log::info!("CMC: extracted {:#x} bytes of fix tiles from C data", self.s_rom.len());
+                let (even, odd) = crate::memory::cmc::deinterleave_region(&region);
+                self.c_roms = vec![even, odd];
+            } else {
+                log::warn!("CMC cart without paired C-ROM data — skipping gfx decrypt");
+            }
+            if cmc.variant == crate::memory::cmc::CmcVariant::Cmc50
+                && !romset.cart.m_rom.is_empty()
+            {
+                romset.cart.m_rom =
+                    crate::memory::cmc::cmc50_m1_decrypt(&romset.cart.m_rom);
+            }
+        }
         // Auto-detect NEO-CMC fix-layer banking by cart name. This is the
         // same set of carts MAME associates with FIX_BANKTYPE_GAROU /
         // FIX_BANKTYPE_KOF2000 via `get_fixed_bank_type()`.
