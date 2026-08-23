@@ -100,10 +100,14 @@ impl Lspc {
                 } else {
                     // Timer expired.
                     self.display_counter = 0;
-                    if (self.display_position_interrupt_control & (1 << 4)) != 0 {
+                    // NOTE: the control field is stored PRE-SHIFTED to bits
+                    // 0-3 (`(value >> 4) & 0x0F` in the $3C0006 write), so the
+                    // flags are: bit0=ENABLE, bit1=LOAD_RELATIVE,
+                    // bit2=AUTOLOAD_VBLANK, bit3=AUTOLOAD_REPEAT.
+                    if (self.display_position_interrupt_control & (1 << 0)) != 0 {
                         self.display_position_pending = true;
                     }
-                    if (self.display_position_interrupt_control & (1 << 7)) != 0 {
+                    if (self.display_position_interrupt_control & (1 << 3)) != 0 {
                         // AUTOLOAD_REPEAT — reload from timer_reload.
                         self.display_counter = self.timer_reload;
                     }
@@ -121,7 +125,7 @@ impl Lspc {
                 new_irq = true;
                 log::debug!("LSPC: VBLANK start, vblank_pending=true");
                 // AUTOLOAD_VBLANK — reload display counter at VBLANK start.
-                if (self.display_position_interrupt_control & (1 << 6)) != 0 {
+                if (self.display_position_interrupt_control & (1 << 2)) != 0 {
                     self.display_counter = self.timer_reload;
                 }
                 // Bump the auto-animation frame counter. Speed selected by
@@ -229,14 +233,20 @@ impl Lspc {
                 self.lspc_mode = value;
                 self.auto_animation_disabled = (value & 0x0008) != 0;
                 self.display_position_interrupt_control = ((value >> 4) & 0x0F) as u8;
+                log::trace!(
+                    "LSPC $3C0006 <- {value:04X} (irq2_ctrl={:X})",
+                    self.display_position_interrupt_control
+                );
             }
             0x08 => {
                 self.timer_reload = (self.timer_reload & 0x0000_FFFF) | (u32::from(value) << 16);
+                log::trace!("LSPC $3C0008 <- {value:04X} (reload={:08X})", self.timer_reload);
             }
             0x0A => {
                 self.timer_reload = (self.timer_reload & 0xFFFF_0000) | u32::from(value);
+                log::trace!("LSPC $3C000A <- {value:04X} (reload={:08X})", self.timer_reload);
                 // LOAD_RELATIVE — at LSB write, schedule the timer.
-                if (self.display_position_interrupt_control & (1 << 5)) != 0 {
+                if (self.display_position_interrupt_control & (1 << 1)) != 0 {
                     self.display_counter = self.timer_reload;
                 }
             }
