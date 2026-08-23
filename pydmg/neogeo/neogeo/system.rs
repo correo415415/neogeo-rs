@@ -166,9 +166,59 @@ impl System {
         if !romset.bios.is_empty() {
             self.bus.load_system_rom(romset.bios);
         }
-        if !romset.cart.p_rom.is_empty() {
-            self.bus.load_p_rom(romset.cart.p_rom);
+        // ==== Cartridge protection (MAME set_slot_idx counterpart) ====
+        // Detect by set name, assemble the P region layout the decrypts
+        // expect, load, then run the 68K-side decrypts on the swapped data.
+        let mut prot = crate::memory::prot::detect_protection(&romset.cart.name);
+        let mut p_data = romset.cart.p_rom;
+        if let crate::memory::prot::CartProt::Sma(_) = &prot {
+            // SMA carts use MAME's region layout:
+            //   $000000-$0BFFFF  fixed part (produced by the decrypt)
+            //   $0C0000-$0FFFFF  SMA chip ROM (`*-sma` file, 0x40000)
+            //   $100000-$8FFFFF  encrypted banked P data (p1/p2)
+            // Our loader concatenates plain P files, so rebuild the region
+            // here from the raw (still byte-swapped) parts; `load_p_rom`
+            // swaps the whole region uniformly afterwards.
+            let mut region = vec![0u8; 0x900000];
+            let sma = &romset.cart.sma_rom;
+            if !sma.is_empty() {
+                let n = sma.len().min(0x40000);
+                region[0xC0000..0xC0000 + n].copy_from_slice(&sma[..n]);
+            } else {
+                log::warn!(
+                    "SMA cart '{}' without SMA ROM — handshake code will be missing",
+                    romset.cart.name
+                );
+            }
+            let n = p_data.len().min(0x800000);
+            region[0x100000..0x100000 + n].copy_from_slice(&p_data[..n]);
+            p_data = region;
         }
+        if !p_data.is_empty() {
+            self.bus.load_p_rom(p_data);
+        }
+        match &mut prot {
+            crate::memory::prot::CartProt::Kof98(p) => {
+                if self.bus.p_rom.len() >= 0x600000 {
+                    log::info!("kof98: unscrambling 242-P1 program ROM");
+                    p.decrypt_68k(&mut self.bus.p_rom);
+                } else {
+                    log::warn!(
+                        "kof98 P region too small ({:#X}) — skipping decrypt",
+                        self.bus.p_rom.len()
+                    );
+                }
+            }
+            crate::memory::prot::CartProt::Sma(p) => {
+                log::info!("SMA cart '{}': decrypting 68K ROM", romset.cart.name);
+                crate::memory::prot::sma_decrypt(p.game, &mut self.bus.p_rom);
+            }
+            _ => {}
+        }
+        if !matches!(prot, crate::memory::prot::CartProt::None) {
+            log::info!("protection device active: {:?}", std::mem::discriminant(&prot));
+        }
+        self.bus.prot = prot;
         // Stash fix-tile S-ROM and sprite C-ROMs for the video renderer.
         self.s_rom = romset.cart.s_rom;
         self.bios_sfix = romset.bios_sfix;
