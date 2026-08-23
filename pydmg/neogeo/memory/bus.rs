@@ -17,6 +17,7 @@
 use crate::cpu::m68k::bus::Bus;
 
 use crate::graphics::lspc::Lspc;
+use crate::memory::prot::{CartProt, SmaGame};
 use crate::memory::upd4990a::Upd4990a;
 
 const WORK_RAM_SIZE: usize = 0x10000; // 64 KiB
@@ -111,6 +112,14 @@ pub struct NeoGeoBus {
     /// Set to true when the watchdog has expired — the system must reset
     /// the CPU and re-arm the watchdog.
     pub watchdog_expired: bool,
+    /// Active cartridge protection device (MAME `set_slot_idx` cart-type
+    /// switch). `CartProt::None` for unprotected carts.
+    pub prot: CartProt,
+    /// High-byte latch for 16-bit protection register writes. The 68000
+    /// core splits word writes into two byte writes (even=high, odd=low);
+    /// protection devices are 16-bit, so we latch the even byte and
+    /// dispatch the full word when the odd byte arrives.
+    prot_w_latch: u8,
 }
 
 /// MAME `WATCHDOG_TIMER(...).set_time(attotime::from_ticks(3244030, NEOGEO_MASTER_CLOCK))`.
@@ -149,7 +158,111 @@ impl NeoGeoBus {
             coin_inputs: 0xFF,
             watchdog_cycles: WATCHDOG_TIMEOUT_68K,
             watchdog_expired: false,
+            prot: CartProt::None,
+            prot_w_latch: 0,
         }
+    }
+
+    /// Protection-device reads shadowing the $200000-$2FFFFF window.
+    /// `a` is the even (word-aligned) bus address. Returns `Some(word)`
+    /// when a device claims the address, `None` to fall through to the
+    /// P-ROM bank window. Mirrors MAME `set_slot_idx` read handlers.
+    fn prot_read16(&mut self, a: u32) -> Option<u16> {
+        // Take the device out to sidestep borrow conflicts when a device
+        // needs to read back through the bus (Metal Slug X).
+        let mut prot = std::mem::take(&mut self.prot);
+        let result = match &mut prot {
+            CartProt::None => None,
+            // fatfury2 / ssideki: whole window.
+            CartProt::FatFury2(p) => Some(p.protection_r((a - 0x200000) >> 1)),
+            // kof98's read overlay lives at $100 (handled in read_phys8).
+            CartProt::Kof98(_) => None,
+            // mslugx: $2FFFE0-$2FFFEF.
+            CartProt::MslugX(p) => {
+                if (0x2FFFE0..=0x2FFFEF).contains(&a) {
+                    let select_word = u16::from_be_bytes([
+                        self.work_ram[0xF00A],
+                        self.work_ram[0xF00B],
+                    ]);
+                    let p_rom = &self.p_rom;
+                    let r = p.protection_r(
+                        |addr| *p_rom.get(addr as usize).unwrap_or(&0),
+                        select_word,
+                    );
+                    Some(r)
+                } else {
+                    None
+                }
+            }
+            CartProt::Sma(p) => {
+                // $2FE446 handshake is common to every SMA game.
+                if a == 0x2FE446 {
+                    Some(p.prot_9a37_r())
+                } else {
+                    let rng_addrs: &[u32] = match p.game {
+                        SmaGame::Kof99 => &[0x2FFFF8, 0x2FFFFA],
+                        SmaGame::Garou | SmaGame::GarouH => &[0x2FFFCC, 0x2FFFF0],
+                        SmaGame::Mslug3 | SmaGame::Mslug3a => &[],
+                        SmaGame::Kof2000 => &[0x2FFFD8, 0x2FFFDA],
+                    };
+                    if rng_addrs.contains(&a) {
+                        Some(p.random_r())
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+        self.prot = prot;
+        result
+    }
+
+    /// Protection-device writes over $200000-$2FFFFF. Returns `true` when
+    /// a device consumed the byte (even bytes are latched, odd bytes
+    /// dispatch the assembled word). Mirrors MAME `set_slot_idx` write
+    /// handlers + `write_bankprot`.
+    fn prot_write8(&mut self, a: u32, value: u8) -> bool {
+        // Which word addresses does the current device claim?
+        let claimed = match &self.prot {
+            CartProt::None => false,
+            CartProt::FatFury2(_) => true, // whole window
+            CartProt::Kof98(_) => (0x20AAAA..=0x20AAAB).contains(&a),
+            CartProt::MslugX(_) => (0x2FFFE0..=0x2FFFEF).contains(&a),
+            CartProt::Sma(p) => {
+                let bank_reg: u32 = match p.game {
+                    SmaGame::Kof99 => 0x2FFFF0,
+                    SmaGame::Garou | SmaGame::GarouH => 0x2FFFC0,
+                    SmaGame::Mslug3 | SmaGame::Mslug3a => 0x2FFFE4,
+                    SmaGame::Kof2000 => 0x2FFFEC,
+                };
+                a == bank_reg || a == bank_reg + 1
+            }
+        };
+        if !claimed {
+            return false;
+        }
+        if a & 1 == 0 {
+            // Even byte = high lane: latch and wait for the low byte.
+            self.prot_w_latch = value;
+            return true;
+        }
+        let word = (u16::from(self.prot_w_latch) << 8) | u16::from(value);
+        let word_addr = a & !1;
+        match &mut self.prot {
+            CartProt::FatFury2(p) => p.protection_w((word_addr - 0x200000) >> 1, word),
+            CartProt::Kof98(p) => p.protection_w(word),
+            CartProt::MslugX(p) => p.protection_w((word_addr - 0x2FFFE0) >> 1, word),
+            CartProt::Sma(p) => {
+                // MAME `write_bankprot`: scrambled banksel.
+                let base = p.bank_base(word);
+                self.p_rom_bank_offset = base;
+                log::trace!(
+                    "SMA bankswitch: sel={word:04X} -> P offset ${base:08X}"
+                );
+            }
+            CartProt::None => unreachable!(),
+        }
+        true
     }
 
     /// Advance the watchdog by `cycles` 68K cycles. Returns `true` if the
@@ -227,6 +340,14 @@ impl NeoGeoBus {
                 }
             }
             0x000080..=0x0FFFFF => {
+                // KOF98 boot overlay at $100-$103 (MAME installs
+                // protection_r over 0x00100-0x00103).
+                if (0x000100..=0x000103).contains(&a) {
+                    if let CartProt::Kof98(p) = &self.prot {
+                        let w = p.protection_r((a >> 1) & 1);
+                        return if a & 1 == 0 { (w >> 8) as u8 } else { w as u8 };
+                    }
+                }
                 // Cartridge P-ROM in normal operation, independent of the
                 // vector swap.
                 if !self.p_rom.is_empty() {
@@ -255,6 +376,13 @@ impl NeoGeoBus {
                 }
             }
             0x200000..=0x2FFFFF => {
+                // Protection devices shadow parts of this window (MAME
+                // `set_slot_idx` install_read_handler calls). They are
+                // 16-bit devices; route through `prot_read16` and pick
+                // the byte lane.
+                if let Some(w) = self.prot_read16(a & !1) {
+                    return if a & 1 == 0 { (w >> 8) as u8 } else { w as u8 };
+                }
                 // Bank window: bus $200000-$2FFFFF maps 1 MiB of the cart
                 // P-ROM selected by the banksel register. For carts ≤ 1 MiB
                 // the offset is 0 so the window mirrors the base ROM (MAME
@@ -331,6 +459,16 @@ impl NeoGeoBus {
                 // them silently.
             }
             0x200000..=0x2FFFFF => {
+                // Protection devices first (MAME installs their write
+                // handlers over this window per cart type). 16-bit devices:
+                // collect both byte lanes via prot_write16 with the byte
+                // value replicated — the real 68000 writes here are word
+                // writes so both lanes arrive back-to-back; devices latch
+                // on each write which matches MAME's write16 semantics
+                // closely enough for these register-style devices.
+                if self.prot_write8(a, value) {
+                    return;
+                }
                 // Standard cart bankswitch register. MAME maps the banksel
                 // write handler ONLY at $2FFFF0-$2FFFFF (`set_slot_idx`:
                 // `install_write_handler(0x2ffff0, 0x2fffff, write_banksel)`);
