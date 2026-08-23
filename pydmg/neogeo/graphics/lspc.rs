@@ -82,8 +82,12 @@ impl Lspc {
     /// Advance the LSPC by `cycles_68k` 68000 cycles. Generates VBL and
     /// display-position interrupts. Returns true if any IRQ became pending.
     pub fn tick(&mut self, cycles_68k: u32) -> bool {
-        // 12 MHz / 60 Hz / 264 lines ≈ 758 cycles per scanline (NTSC).
-        const CYC_PER_LINE: u32 = 758;
+        // Exact NTSC line timing from MAME `neogeo_spr.h`:
+        //   NEOGEO_PIXEL_CLOCK = MASTER/4 = 6 MHz, NEOGEO_HTOTAL = 0x180 (384 px).
+        // One scanline = 384 px / 6 MHz = 64 µs = **768** 68K cycles (12 MHz).
+        // (The previous value 758 assumed exactly 60 Hz; real hardware runs
+        // at 6e6/(384*264) = 59.1856 Hz.)
+        const CYC_PER_LINE: u32 = 768;
         // The display position counter ticks at the LSPC pixel clock
         // (~6 MHz, 384 px per line), i.e. roughly half the 68k clock.
         // We approximate by ticking it once per 68k cycle / 2.
