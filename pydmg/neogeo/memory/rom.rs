@@ -689,3 +689,34 @@ mod matches_slot_tests {
         assert!(!matches_slot("000-lo.lo", &['v']));
     }
 }
+
+#[cfg(test)]
+mod p_rom_swap_tests {
+    use super::plausible_vector_table;
+
+    #[test]
+    fn valid_cart_vectors_pass() {
+        // SSP=$0010F300 (work RAM), PC=$00000122 (cart base) — typical cart.
+        let d = [0x00, 0x10, 0xF3, 0x00, 0x00, 0x00, 0x01, 0x22];
+        assert!(plausible_vector_table(&d));
+    }
+
+    #[test]
+    fn blank_rom_fails() {
+        assert!(!plausible_vector_table(&[0xFF; 8]));
+        assert!(!plausible_vector_table(&[0x00; 8]));
+    }
+
+    #[test]
+    fn odd_pc_fails() {
+        let d = [0x00, 0x10, 0xF3, 0x00, 0x00, 0x00, 0x01, 0x23];
+        assert!(!plausible_vector_table(&d));
+    }
+
+    #[test]
+    fn code_bytes_fail() {
+        // Random-looking opcodes at offset 0 (mid-ROM data, not vectors).
+        let d = [0x4E, 0xF9, 0x00, 0xC0, 0x44, 0x0A, 0x30, 0x39];
+        assert!(!plausible_vector_table(&d));
+    }
+}
