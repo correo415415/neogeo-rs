@@ -229,12 +229,18 @@ impl Lspc {
                 self.lspc_mode = value;
                 self.auto_animation_disabled = (value & 0x0008) != 0;
                 self.display_position_interrupt_control = ((value >> 4) & 0x0F) as u8;
+                log::trace!(
+                    "LSPC $3C0006 <- {value:04X} (irq2_ctrl={:X})",
+                    self.display_position_interrupt_control
+                );
             }
             0x08 => {
                 self.timer_reload = (self.timer_reload & 0x0000_FFFF) | (u32::from(value) << 16);
+                log::trace!("LSPC $3C0008 <- {value:04X} (reload={:08X})", self.timer_reload);
             }
             0x0A => {
                 self.timer_reload = (self.timer_reload & 0xFFFF_0000) | u32::from(value);
+                log::trace!("LSPC $3C000A <- {value:04X} (reload={:08X})", self.timer_reload);
                 // LOAD_RELATIVE — at LSB write, schedule the timer.
                 if (self.display_position_interrupt_control & (1 << 5)) != 0 {
                     self.display_counter = self.timer_reload;
