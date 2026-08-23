@@ -488,9 +488,10 @@ fn categorise(fname: String, data: Vec<u8>, out: &mut CategorisedFiles) {
         return;
     }
     // SMA protection-chip ROM: MAME names them `<id>-sma.<tag>` (e.g.
-    // `251-sma.kc` for KOF99, `250-sma.kd` for Metal Slug 3). Capture into
-    // a dedicated bucket — the protection layer maps it at $0C0000.
-    if n.contains("-sma.") || n.starts_with("sma.") {
+    // `251-sma.kc` for KOF99) or `<colour>.neo-sma` (e.g. `green.neo-sma`
+    // for Metal Slug 3, `neo-sma` for garou). Capture into a dedicated
+    // bucket — the protection layer maps it at $0C0000.
+    if n.contains("-sma.") || n.starts_with("sma.") || n.ends_with(".neo-sma") || n == "neo-sma" {
         out.sma = data;
         return;
     }
