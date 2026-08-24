@@ -336,6 +336,20 @@ impl RomSet {
             }
         }
 
+        // Homebrew zips built with ngdevkit ship every ROM **twice**: once
+        // with the legacy `.bin` extension and once with the MAME-style slot
+        // extension (`202-c1.bin` *and* `202-c1.c1`, identical bytes). Both
+        // names match our slot patterns, so without deduplication each
+        // region would be loaded twice — doubling the P-ROM, corrupting the
+        // C-ROM even/odd pairing (c1.bin,c1.c1,c2.bin,c2.c2 sorts into the
+        // wrong plane order) and mangling S/M/V. Drop the duplicates before
+        // sorting.
+        dedupe_bucket(&mut bucket.p);
+        dedupe_bucket(&mut bucket.s);
+        dedupe_bucket(&mut bucket.m);
+        dedupe_bucket(&mut bucket.v);
+        dedupe_bucket(&mut bucket.c);
+
         // Sort and concatenate.
         bucket.p.sort_by(|a, b| a.0.cmp(&b.0));
         bucket.v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -530,6 +544,54 @@ fn categorise(fname: String, data: Vec<u8>, out: &mut CategorisedFiles) {
     }
 }
 
+/// Remove duplicate ROM files from a bucket.
+///
+/// ngdevkit-built homebrew zips contain each ROM twice — as
+/// `<id>-<slot><n>.bin` *and* `<id>-<slot><n>.<slot><n>` with identical
+/// bytes. Both spellings match our slot patterns, so we must keep only one
+/// copy per file *stem*. When a stem collides we prefer the MAME-style slot
+/// extension over `.bin`; a collision with *different* content keeps the
+/// preferred copy and logs a warning. Identical blobs under different stems
+/// (rare, but e.g. re-used fill data across C-ROM planes) are left alone —
+/// only same-stem duplicates are dropped.
+fn dedupe_bucket(bucket: &mut Bucket) {
+    if bucket.len() < 2 {
+        return;
+    }
+    let mut keep: Vec<(String, Vec<u8>)> = Vec::with_capacity(bucket.len());
+    for (name, data) in bucket.drain(..) {
+        let stem = |s: &str| -> String {
+            let lower = s.to_ascii_lowercase();
+            match lower.rfind('.') {
+                Some(d) => lower[..d].to_string(),
+                None => lower,
+            }
+        };
+        let new_stem = stem(&name);
+        if let Some(existing) = keep.iter_mut().find(|(n, _)| stem(n) == new_stem) {
+            // Same stem already present — keep only one copy.
+            let existing_is_bin = existing.0.to_ascii_lowercase().ends_with(".bin");
+            let new_is_bin = name.to_ascii_lowercase().ends_with(".bin");
+            if existing.1 != data {
+                log::warn!(
+                    "duplicate ROM stem '{}' with DIFFERENT content ('{}' vs '{}') — keeping preferred copy",
+                    new_stem, existing.0, name
+                );
+            }
+            if existing_is_bin && !new_is_bin {
+                // Prefer the slot-extension spelling.
+                log::info!("dropping duplicate ROM '{}' (kept '{}')", existing.0, name);
+                *existing = (name, data);
+            } else {
+                log::info!("dropping duplicate ROM '{}' (kept '{}')", name, existing.0);
+            }
+        } else {
+            keep.push((name, data));
+        }
+    }
+    *bucket = keep;
+}
+
 /// Return true if `lower` looks like a Neo Geo cartridge ROM file whose
 /// slot letter is in `letters` (e.g. `['p']` for program ROMs).
 ///
@@ -719,5 +781,61 @@ mod p_rom_swap_tests {
         // Random-looking opcodes at offset 0 (mid-ROM data, not vectors).
         let d = [0x4E, 0xF9, 0x00, 0xC0, 0x44, 0x0A, 0x30, 0x39];
         assert!(!plausible_vector_table(&d));
+    }
+}
+
+#[cfg(test)]
+mod dedupe_tests {
+    use super::{dedupe_bucket, Bucket};
+
+    #[test]
+    fn ngdevkit_bin_and_slot_ext_duplicates_are_dropped() {
+        // doomgeo / ngdevkit layout: every ROM shipped twice.
+        let mut b: Bucket = vec![
+            ("202-c1.bin".into(), vec![0xAA; 8]),
+            ("202-c1.c1".into(), vec![0xAA; 8]),
+            ("202-c2.bin".into(), vec![0xBB; 8]),
+            ("202-c2.c2".into(), vec![0xBB; 8]),
+        ];
+        dedupe_bucket(&mut b);
+        assert_eq!(b.len(), 2);
+        // Slot-extension spelling wins over .bin.
+        assert_eq!(b[0].0, "202-c1.c1");
+        assert_eq!(b[1].0, "202-c2.c2");
+        assert_eq!(b[0].1, vec![0xAA; 8]);
+        assert_eq!(b[1].1, vec![0xBB; 8]);
+    }
+
+    #[test]
+    fn distinct_stems_are_untouched() {
+        let mut b: Bucket = vec![
+            ("263-c1.c1".into(), vec![1]),
+            ("263-c2.c2".into(), vec![2]),
+            ("263-c3.c3".into(), vec![3]),
+        ];
+        dedupe_bucket(&mut b);
+        assert_eq!(b.len(), 3);
+    }
+
+    #[test]
+    fn identical_data_under_different_stems_is_kept() {
+        // Same bytes but genuinely different ROM positions — must keep both.
+        let mut b: Bucket = vec![
+            ("021-v11.v11".into(), vec![0; 4]),
+            ("021-v21.v21".into(), vec![0; 4]),
+        ];
+        dedupe_bucket(&mut b);
+        assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn slot_ext_first_then_bin_keeps_slot_ext() {
+        let mut b: Bucket = vec![
+            ("202-p1.p1".into(), vec![7; 4]),
+            ("202-p1.bin".into(), vec![7; 4]),
+        ];
+        dedupe_bucket(&mut b);
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].0, "202-p1.p1");
     }
 }
