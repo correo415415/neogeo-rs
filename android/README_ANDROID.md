@@ -5,6 +5,29 @@ Arquitectura: **core Rust → cdylib JNI → Activity Kotlin**, sin SDL2 (la
 UI es 100 % Android nativa: `SurfaceView` + `AudioTrack` + controles
  táctiles).
 
+## Novedades v0.3 (savestates + salas LAN)
+
+- **💾 Savestates (formato NGSS v1, ~220 KiB).** En Android: botones
+  «Guardar estado / Cargar estado» en el overlay de pausa, un slot por
+  juego (`filesDir/savestates/<set>.ngss`, escritura atómica). En PC
+  (SDL2): `F5` guardar, `F9` cargar, `F6`/`F7` cambiar de slot (0-9).
+  Deshabilitados durante partida LAN para no romper el lockstep.
+- **🚪 Salas LAN por juego.** «Crear sala» anuncia el romset por mDNS
+  (TXT record `game`); al «Unirse» solo se listan salas **del mismo
+  juego** que acabas de cargar. La entrada por IP manual también está
+  protegida: el host verifica el juego en el handshake TCP y rechaza
+  (REJECT) los que no coincidan.
+- **📶 Input-delay adaptativo por RTT.** Al conectar, el host sondea el
+  RTT real con 4 PING/PONG por TCP y elige el delay: 1 frame (<8 ms,
+  WiFi 5 GHz), 2 (<25 ms), 3 (<50 ms) o 4 (peor caso LAN).
+- **🛡️ Inputs redundantes sobre UDP.** Cada datagrama repite los
+  últimos 8 masks (frames F…F-7): perder hasta 7 datagramas seguidos
+  no pierde ningún input — el siguiente que llegue los recupera.
+- **🔄 Resincronización automática por savestate.** Si el CRC de un
+  keyframe no cuadra (desync), el cliente pide un snapshot NGSS al
+  host por TCP, lo carga, adopta el contador de frames del host y la
+  partida continúa — antes se quedaba pausada para siempre.
+
 ## Novedades v0.2 (rendimiento + interfaz + release firmada)
 
 - **⚡ Render por GPU**: `lockHardwareCanvas` (API 26+) con fallback

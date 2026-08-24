@@ -45,20 +45,37 @@ class LanDiscovery(context: Context) {
         val serviceName: String,
         val host: InetAddress,
         val port: Int,
+        /** Nombre del set anunciado en el registro TXT mDNS (clave
+         *  [TXT_GAME]), o "" si el host corre una versión antigua que
+         *  no lo anuncia. */
+        val gameName: String = "",
     ) {
-        override fun toString(): String = "$serviceName · ${host.hostAddress}:$port"
+        override fun toString(): String =
+            if (gameName.isEmpty()) "$serviceName · ${host.hostAddress}:$port"
+            else "$serviceName · $gameName · ${host.hostAddress}:$port"
     }
 
     /** Register the local device as a joinable host under
-     *  [serviceName] (defaults to a stable ID from Build.MODEL). */
+     *  [serviceName] (defaults to a stable ID from Build.MODEL).
+     *
+     *  [gameName] viaja como atributo TXT ([TXT_GAME]) para que los
+     *  clientes puedan filtrar y mostrar SOLO salas de su mismo juego
+     *  sin necesidad de conectar primero. */
     fun registerHost(
         serviceName: String,
         tcpPort: Int = Protocol.DEFAULT_TCP_PORT,
+        gameName: String = "",
     ) {
         val info = NsdServiceInfo().apply {
             this.serviceName = serviceName
             this.serviceType = SERVICE_TYPE
             this.port = tcpPort
+            if (gameName.isNotEmpty()) {
+                // Los TXT records mDNS limitan cada par clave=valor a
+                // 255 bytes; los nombres de set MAME son cortos (<=16),
+                // pero recortamos por si acaso.
+                setAttribute(TXT_GAME, gameName.take(24))
+            }
         }
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(nsi: NsdServiceInfo) {
@@ -102,7 +119,10 @@ class LanDiscovery(context: Context) {
                     }
                     override fun onServiceResolved(nsi: NsdServiceInfo) {
                         val host = nsi.host ?: return
-                        val peer = Peer(nsi.serviceName, host, nsi.port)
+                        val game = try {
+                            nsi.attributes[TXT_GAME]?.toString(Charsets.UTF_8) ?: ""
+                        } catch (_: Throwable) { "" }
+                        val peer = Peer(nsi.serviceName, host, nsi.port, game)
                         visible[nsi.serviceName] = peer
                         onPeerFound?.invoke(peer)
                     }
@@ -125,5 +145,7 @@ class LanDiscovery(context: Context) {
     companion object {
         private const val TAG = "netplay-nsd"
         const val SERVICE_TYPE = "_pydmg-neogeo._tcp."
+        /** Clave TXT mDNS bajo la que el host anuncia su romset. */
+        const val TXT_GAME = "game"
     }
 }

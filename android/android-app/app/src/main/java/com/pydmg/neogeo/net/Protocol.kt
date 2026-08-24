@@ -63,15 +63,37 @@ import java.nio.ByteOrder
 object Protocol {
     const val MAGIC_0: Byte = 0xD6.toByte()
     const val MAGIC_1: Byte = 0x64.toByte()
-    const val VERSION: Byte = 0x01
+
+    /**
+     * v2 (salas LAN):
+     *   * HELLO lleva el nombre del juego — el host rechaza (REJECT) si
+     *     no coincide con el suyo, para que "unirse por IP manual" no
+     *     pueda colarse en una sala de otro juego.
+     *   * PING/PONG por TCP en el handshake: el host mide el RTT real
+     *     y elige el input-delay adaptativamente (1..4 frames).
+     *   * INPUT redundante: cada datagrama lleva los últimos 8 masks
+     *     (frames F, F-1, …, F-7) + el frame actual del emisor para
+     *     control de deriva. Perder hasta 7 datagramas seguidos no
+     *     pierde ningún input.
+     *   * STATE_REQ/STATE_DATA: resincronización por savestate — al
+     *     detectar un desync el cliente pide el estado, el host manda
+     *     su snapshot NGSS por TCP, el cliente lo carga y la partida
+     *     continúa (en vez de quedarse pausada para siempre).
+     */
+    const val VERSION: Byte = 0x02
 
     const val OP_HELLO: Byte        = 0x10
     const val OP_HELLO_ACK: Byte    = 0x11
+    const val OP_REJECT: Byte       = 0x12
     const val OP_ROM_ID: Byte       = 0x20
     const val OP_START: Byte        = 0x30
     const val OP_INPUT: Byte        = 0x40
+    const val OP_PING: Byte         = 0x42
+    const val OP_PONG: Byte         = 0x43
     const val OP_KEYFRAME: Byte     = 0x50
     const val OP_KEYFRAME_ACK: Byte = 0x51
+    const val OP_STATE_REQ: Byte    = 0x52
+    const val OP_STATE_DATA: Byte   = 0x53
     const val OP_PAUSE: Byte        = 0x60
     const val OP_RESUME: Byte       = 0x61
     const val OP_BYE: Byte          = 0xFF.toByte()
@@ -101,48 +123,112 @@ object Protocol {
  * A packet for a frame the peer has already consumed is silently
  * dropped by the receiver.
  */
-data class InputPacket(
+class InputPacket(
+    /** Frame al que aplica masks[0]; masks[i] aplica a frameNumber - i. */
     val frameNumber: Int,
-    val inputMask: Int,
+    /** Frame actual del emulador del emisor — control de deriva. */
+    val senderFrame: Int,
+    /** Historial redundante: hasta [MAX_MASKS] masks recientes. */
+    val masks: IntArray,
 ) {
     fun encode(dst: ByteBuffer) {
         Protocol.writeHeader(dst, Protocol.OP_INPUT)
         dst.putInt(frameNumber)
-        dst.putShort((inputMask and 0xFFFF).toShort())
-        // Padding to a round 12-byte packet for alignment. Not strictly
-        // required but keeps Wireshark output tidy.
-        dst.putShort(0)
+        dst.putInt(senderFrame)
+        val n = masks.size.coerceAtMost(MAX_MASKS)
+        dst.put(n.toByte())
+        for (i in 0 until n) dst.putShort((masks[i] and 0xFFFF).toShort())
     }
 
     companion object {
+        /** Cuántos masks históricos viajan en cada datagrama. Con 8, se
+         *  toleran 7 datagramas perdidos seguidos sin perder un input. */
+        const val MAX_MASKS = 8
+        /** 4 header + 4 frame + 4 senderFrame + 1 count + 2*8 masks. */
+        const val WIRE_SIZE = 4 + 4 + 4 + 1 + 2 * MAX_MASKS
+
         /** Parses a validated INPUT packet from `src`. Returns null if
          *  the header magic / version / opcode don't match. */
         fun decode(src: ByteBuffer): InputPacket? {
             src.order(ByteOrder.LITTLE_ENDIAN)
-            if (src.remaining() < 12) return null
+            if (src.remaining() < 14) return null
             if (src.get() != Protocol.MAGIC_0) return null
             if (src.get() != Protocol.MAGIC_1) return null
             if (src.get() != Protocol.VERSION) return null
             if (src.get() != Protocol.OP_INPUT) return null
             val fn = src.int
-            val mask = src.short.toInt() and 0xFFFF
-            src.short  // padding
-            return InputPacket(fn, mask)
+            val sf = src.int
+            val n = src.get().toInt() and 0xFF
+            if (n == 0 || n > MAX_MASKS || src.remaining() < n * 2) return null
+            val masks = IntArray(n) { src.short.toInt() and 0xFFFF }
+            return InputPacket(fn, sf, masks)
         }
     }
 }
 
-/** TCP handshake payload — sent client → host on connect. */
+/** TCP handshake payload — sent client → host on connect.
+ *  v2: lleva también el nombre del set del juego para que el host pueda
+ *  rechazar a un cliente con otro juego (defensa para "IP manual"). */
 data class HelloPacket(
     val nickname: String,   // free-form, purely cosmetic
+    val gameName: String,   // romset name, must match the host's
 ) {
     fun encode(): ByteArray {
         val nick = nickname.take(24).toByteArray(Charsets.UTF_8)
-        val buf = ByteBuffer.allocate(4 + 1 + nick.size).order(ByteOrder.LITTLE_ENDIAN)
+        val game = gameName.take(24).toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate(4 + 1 + nick.size + 1 + game.size)
+            .order(ByteOrder.LITTLE_ENDIAN)
         Protocol.writeHeader(buf, Protocol.OP_HELLO)
         buf.put(nick.size.toByte())
         buf.put(nick)
+        buf.put(game.size.toByte())
+        buf.put(game)
         return buf.array()
+    }
+}
+
+/** Host → client: la sala rechaza la conexión. */
+data class RejectPacket(val reason: Byte) {
+    fun encode(): ByteArray {
+        val buf = ByteBuffer.allocate(4 + 1).order(ByteOrder.LITTLE_ENDIAN)
+        Protocol.writeHeader(buf, Protocol.OP_REJECT)
+        buf.put(reason)
+        return buf.array()
+    }
+    companion object {
+        const val REASON_GAME_MISMATCH: Byte = 1
+    }
+}
+
+/** Handshake RTT probe (TCP, host → client; el cliente responde PONG
+ *  con el mismo payload). El host usa el mínimo de varias muestras
+ *  para elegir el input-delay. */
+data class PingPacket(val seq: Int, val nanos: Long) {
+    fun encode(op: Byte = Protocol.OP_PING): ByteArray {
+        val buf = ByteBuffer.allocate(4 + 4 + 8).order(ByteOrder.LITTLE_ENDIAN)
+        Protocol.writeHeader(buf, op)
+        buf.putInt(seq)
+        buf.putLong(nanos)
+        return buf.array()
+    }
+}
+
+/** Host → client: snapshot NGSS completo para resincronizar tras un
+ *  desync. `frame` es el frame de sesión del host en el momento del
+ *  snapshot; el cliente adopta ese contador tras cargar el estado. */
+class StateDataPacket(val frame: Int, val state: ByteArray) {
+    fun encode(): ByteArray {
+        val buf = ByteBuffer.allocate(4 + 4 + 4 + state.size).order(ByteOrder.LITTLE_ENDIAN)
+        Protocol.writeHeader(buf, Protocol.OP_STATE_DATA)
+        buf.putInt(frame)
+        buf.putInt(state.size)
+        buf.put(state)
+        return buf.array()
+    }
+    companion object {
+        /** Un snapshot NGSS ronda los 220 KiB; 8 MiB es un tope de
+         *  cordura contra corrupción del stream. */
+        const val MAX_STATE_BYTES = 8 * 1024 * 1024
     }
 }
 
