@@ -81,6 +81,14 @@ class NetplaySession private constructor(
     /** Latest observed desync info, or null if in sync. */
     val desync = AtomicReference<DesyncReport?>(null)
 
+    // ---- Resincronización por savestate ----
+    /** HOST: el cliente ha pedido un snapshot (STATE_REQ recibido). */
+    private val snapshotRequested = AtomicBoolean(false)
+    /** CLIENT: snapshot del host pendiente de cargar en el emulador. */
+    private val pendingRemoteState = AtomicReference<RemoteState?>(null)
+
+    class RemoteState(val frame: Int, val state: ByteArray)
+
     /**
      * Per-future-frame remote input masks. Key = frame number the
      * mask applies to. Populated by the UDP RX thread as packets
@@ -132,11 +140,18 @@ class NetplaySession private constructor(
         val applyAt = currentFrame.get() + inputDelay
         localInputs[applyAt] = localMask
 
-        val buf = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
-        InputPacket(applyAt, localMask).encode(buf)
-        val bytes = buf.array()
+        // Historial redundante: cada datagrama repite los últimos
+        // [InputPacket.MAX_MASKS] masks (frames applyAt, applyAt-1, …),
+        // así la pérdida de hasta MAX_MASKS-1 datagramas consecutivos
+        // no pierde ningún input — el siguiente que llegue los trae.
+        maskHistory[applyAt % maskHistory.size] = localMask
+        val n = minOf(InputPacket.MAX_MASKS, applyAt + 1)
+        val masks = IntArray(n) { i -> maskHistory[(applyAt - i) % maskHistory.size] }
+
+        val buf = ByteBuffer.allocate(InputPacket.WIRE_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        InputPacket(applyAt, currentFrame.get(), masks).encode(buf)
         try {
-            udp.send(DatagramPacket(bytes, bytes.size, remoteEndpoint))
+            udp.send(DatagramPacket(buf.array(), buf.position(), remoteEndpoint))
         } catch (t: Throwable) {
             Log.w(TAG, "UDP send failed: ${t.message}")
         }
@@ -208,6 +223,69 @@ class NetplaySession private constructor(
         pendingLocalKeyframes[frame] = crc32
     }
 
+    // ------------------------------------------------------------------
+    //   Resync por savestate (llamado desde el hilo del emulador)
+    // ------------------------------------------------------------------
+
+    /** HOST: true una sola vez cuando el cliente ha pedido resync.
+     *  El emulador debe responder llamando a [sendStateSnapshot] con
+     *  el resultado de `nativeSaveState()`. */
+    fun consumeSnapshotRequest(): Boolean =
+        role == Role.HOST && snapshotRequested.compareAndSet(true, false)
+
+    /** HOST: envía el snapshot al cliente y continúa la partida desde
+     *  el frame de sesión actual. Limpia los inputs programados para
+     *  que ambos lados partan de un plano limpio (el input-hold cubre
+     *  el hueco de delay). */
+    fun sendStateSnapshot(state: ByteArray) {
+        if (role != Role.HOST) return
+        val f = currentFrame.get()
+        localInputs.clear(); remoteInputs.clear()
+        try {
+            synchronized(tcpWriteLock) {
+                tcp.getOutputStream().write(StateDataPacket(f, state).encode())
+                tcp.getOutputStream().flush()
+            }
+            desync.set(null)
+            paused.set(false)
+            Log.i(TAG, "state snapshot sent (${state.size} B) at frame $f")
+        } catch (t: Throwable) {
+            Log.w(TAG, "state snapshot send failed: ${t.message}")
+        }
+    }
+
+    /** CLIENT: snapshot del host pendiente de cargar, o null. El
+     *  emulador lo consume, llama a `nativeLoadState()` y después a
+     *  [completeResync]. */
+    fun consumePendingRemoteState(): RemoteState? =
+        pendingRemoteState.getAndSet(null)
+
+    /** CLIENT: el snapshot se cargó con éxito — adopta el contador de
+     *  frames del host y reanuda. */
+    fun completeResync(hostFrame: Int) {
+        localInputs.clear(); remoteInputs.clear()
+        currentFrame.set(hostFrame)
+        desync.set(null)
+        paused.set(false)
+        Log.i(TAG, "resynced to host frame $hostFrame")
+    }
+
+    /** CLIENT: pide al host un snapshot para resincronizar. */
+    private fun requestStateSnapshot() {
+        if (role != Role.CLIENT) return
+        try {
+            val buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            Protocol.writeHeader(buf, Protocol.OP_STATE_REQ)
+            synchronized(tcpWriteLock) {
+                tcp.getOutputStream().write(buf.array())
+                tcp.getOutputStream().flush()
+            }
+            Log.i(TAG, "state snapshot requested from host")
+        } catch (t: Throwable) {
+            Log.w(TAG, "state request failed: ${t.message}")
+        }
+    }
+
     override fun close() {
         if (!alive.compareAndSet(true, false)) return
         try { tcp.close() } catch (_: Throwable) {}
@@ -221,6 +299,11 @@ class NetplaySession private constructor(
 
     @Volatile private var lastRemoteMask: Int = 0
     private val pendingLocalKeyframes = ConcurrentHashMap<Int, Int>()
+    /** Anillo con los últimos masks locales para el envío redundante. */
+    private val maskHistory = IntArray(64)
+    /** Serializa las escrituras TCP (keyframes vs snapshots vs acks
+     *  salen de hilos distintos). */
+    private val tcpWriteLock = Any()
 
     private fun udpReceiveLoop() {
         val scratch = ByteArray(64)
@@ -230,9 +313,14 @@ class NetplaySession private constructor(
                 udp.receive(p)
                 val buf = ByteBuffer.wrap(scratch, 0, p.length)
                 val pkt = InputPacket.decode(buf) ?: continue
-                // Drop packets we've already passed (very late arrivals).
-                if (pkt.frameNumber >= currentFrame.get()) {
-                    remoteInputs[pkt.frameNumber] = pkt.inputMask
+                // Cada datagrama trae masks[i] para el frame
+                // (frameNumber - i): rellenamos todos los que aún no
+                // hayamos consumido, recuperando así los inputs de
+                // datagramas perdidos.
+                val cur = currentFrame.get()
+                for (i in pkt.masks.indices) {
+                    val f = pkt.frameNumber - i
+                    if (f >= cur) remoteInputs.putIfAbsent(f, pkt.masks[i])
                 }
             } catch (_: SocketTimeoutException) {
                 // Timeout is fine, loop and re-check `alive`.
@@ -257,6 +345,14 @@ class NetplaySession private constructor(
                 when (hdr[3]) {
                     Protocol.OP_KEYFRAME -> handleKeyframe(ins)
                     Protocol.OP_KEYFRAME_ACK -> handleKeyframeAck(ins)
+                    Protocol.OP_STATE_REQ -> {
+                        // El cliente pide resincronizar: pausamos y
+                        // avisamos al hilo del emulador para que capture
+                        // el snapshot entre frames.
+                        paused.set(true)
+                        snapshotRequested.set(true)
+                    }
+                    Protocol.OP_STATE_DATA -> handleStateData(ins)
                     Protocol.OP_PAUSE -> { paused.set(true) }
                     Protocol.OP_RESUME -> { paused.set(false) }
                     Protocol.OP_BYE -> {
@@ -288,12 +384,35 @@ class NetplaySession private constructor(
         }
         val ok = ourCrc == hostCrc
         try {
-            tcp.getOutputStream().write(KeyframeAckPacket(frame, ok).encode())
+            synchronized(tcpWriteLock) {
+                tcp.getOutputStream().write(KeyframeAckPacket(frame, ok).encode())
+            }
         } catch (_: Throwable) {}
         if (!ok) {
             desync.set(DesyncReport(frame, ourCrc, hostCrc))
             paused.set(true)
+            // Auto-recuperación: en vez de quedarnos pausados para
+            // siempre, pedimos el estado del host y seguimos jugando.
+            requestStateSnapshot()
         }
+    }
+
+    /** CLIENT: recibe el snapshot NGSS del host por TCP. */
+    private fun handleStateData(ins: java.io.InputStream) {
+        val head = ByteArray(8)
+        if (!readFully(ins, head)) return
+        val b = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN)
+        val frame = b.int
+        val len = b.int
+        if (len <= 0 || len > StateDataPacket.MAX_STATE_BYTES) {
+            Log.w(TAG, "state data with bogus length $len — dropping session")
+            alive.set(false)
+            return
+        }
+        val state = ByteArray(len)
+        if (!readFully(ins, state)) return
+        pendingRemoteState.set(RemoteState(frame, state))
+        Log.i(TAG, "state snapshot received ($len B) for frame $frame")
     }
 
     private fun handleKeyframeAck(ins: java.io.InputStream) {
@@ -321,11 +440,15 @@ class NetplaySession private constructor(
             recordLocalKeyframe(frame, crc32)
         } else {
             val ok = hostCrc == crc32
-            try { tcp.getOutputStream().write(KeyframeAckPacket(frame, ok).encode()) }
-            catch (_: Throwable) {}
+            try {
+                synchronized(tcpWriteLock) {
+                    tcp.getOutputStream().write(KeyframeAckPacket(frame, ok).encode())
+                }
+            } catch (_: Throwable) {}
             if (!ok) {
                 desync.set(DesyncReport(frame, crc32, hostCrc))
                 paused.set(true)
+                requestStateSnapshot()
             }
         }
     }
@@ -349,40 +472,101 @@ class NetplaySession private constructor(
          * responsible for setting a UI timeout and cancelling if the
          * user gives up.
          */
+        /**
+         * v2: la sala verifica que el cliente trae el MISMO juego
+         * ([gameName]); si no, responde REJECT y sigue esperando a
+         * otro cliente. Después mide el RTT real con PING/PONG por
+         * TCP y elige el input-delay adaptativamente:
+         *
+         *   RTT mín        delay
+         *   ------------   -----
+         *   < 8 ms          1 frame  (WiFi 5 GHz / ethernet)
+         *   < 25 ms         2 frames (WiFi 2.4 GHz típico)
+         *   < 50 ms         3 frames (red congestionada)
+         *   >= 50 ms        4 frames (peor caso tolerable en LAN)
+         */
         fun acceptAsHost(
+            gameName: String,
             tcpPort: Int = Protocol.DEFAULT_TCP_PORT,
             udpPort: Int = Protocol.DEFAULT_UDP_PORT,
-            inputDelay: Int = 2,
         ): NetplaySession {
             val server = ServerSocket(tcpPort)
             try {
-                val tcp = server.accept()
-                tcp.tcpNoDelay = true
-                tcp.soTimeout = TCP_SO_TIMEOUT_MS
+                while (true) {
+                    val tcp = server.accept()
+                    tcp.tcpNoDelay = true
+                    tcp.soTimeout = TCP_SO_TIMEOUT_MS
 
-                // Read HELLO
-                val ins = tcp.getInputStream()
-                val hdr = ByteArray(4)
-                if (!readFully(ins, hdr) ||
-                    hdr[0] != Protocol.MAGIC_0 || hdr[1] != Protocol.MAGIC_1 ||
-                    hdr[2] != Protocol.VERSION || hdr[3] != Protocol.OP_HELLO) {
-                    tcp.close()
-                    throw RuntimeException("bad HELLO from client")
+                    // Read HELLO (v2: nick + game)
+                    val ins = tcp.getInputStream()
+                    val hdr = ByteArray(4)
+                    if (!readFully(ins, hdr) ||
+                        hdr[0] != Protocol.MAGIC_0 || hdr[1] != Protocol.MAGIC_1 ||
+                        hdr[2] != Protocol.VERSION || hdr[3] != Protocol.OP_HELLO) {
+                        try { tcp.close() } catch (_: Throwable) {}
+                        // Cliente con versión/protocolo distinto — sigue
+                        // esperando al siguiente en vez de tirar la sala.
+                        continue
+                    }
+                    val nickLen = ins.read()
+                    val nick = ByteArray(nickLen)
+                    readFully(ins, nick)
+                    val gameLen = ins.read()
+                    val game = ByteArray(gameLen)
+                    readFully(ins, game)
+                    val clientGame = String(game, Charsets.UTF_8)
+                    Log.i(TAG, "client nick='${String(nick, Charsets.UTF_8)}' game='$clientGame'")
+
+                    if (clientGame != gameName) {
+                        // Sala de otro juego: rechazo limpio y a esperar
+                        // al siguiente cliente.
+                        Log.w(TAG, "rejecting client: game '$clientGame' != '$gameName'")
+                        try {
+                            tcp.getOutputStream().write(
+                                RejectPacket(RejectPacket.REASON_GAME_MISMATCH).encode())
+                            tcp.close()
+                        } catch (_: Throwable) {}
+                        continue
+                    }
+
+                    // ---- RTT probe: 4 PINGs por TCP, nos quedamos el mín ----
+                    val outs = tcp.getOutputStream()
+                    var minRttNs = Long.MAX_VALUE
+                    val pongHdr = ByteArray(4)
+                    val pongPayload = ByteArray(12)
+                    for (seq in 0 until 4) {
+                        val t0 = System.nanoTime()
+                        outs.write(PingPacket(seq, t0).encode()); outs.flush()
+                        if (!readFully(ins, pongHdr) ||
+                            pongHdr[3] != Protocol.OP_PONG ||
+                            !readFully(ins, pongPayload)) {
+                            minRttNs = -1; break
+                        }
+                        val rtt = System.nanoTime() - t0
+                        if (rtt < minRttNs) minRttNs = rtt
+                    }
+                    val inputDelay = when {
+                        minRttNs < 0 -> 2               // sonda falló: default histórico
+                        minRttNs < 8_000_000L -> 1
+                        minRttNs < 25_000_000L -> 2
+                        minRttNs < 50_000_000L -> 3
+                        else -> 4
+                    }
+                    Log.i(TAG, "RTT min=${if (minRttNs < 0) "?" else "${minRttNs / 1_000_000.0} ms"} → inputDelay=$inputDelay")
+
+                    // Reply HELLO_ACK
+                    val sessionId = (Math.random() * Int.MAX_VALUE).toInt()
+                    outs.write(HelloAckPacket(sessionId, inputDelay).encode())
+                    outs.flush()
+
+                    val udp = DatagramSocket(udpPort)
+                    udp.soTimeout = UDP_SO_TIMEOUT_MS
+                    val remote = InetSocketAddress(tcp.inetAddress, udpPort)
+                    Log.i(TAG, "host session established with ${tcp.inetAddress}, delay=$inputDelay")
+                    return NetplaySession(Role.HOST, inputDelay, tcp, udp, remote)
                 }
-                val nickLen = ins.read()
-                val nick = ByteArray(nickLen)
-                readFully(ins, nick)
-                Log.i(TAG, "client nick='${String(nick, Charsets.UTF_8)}'")
-
-                // Reply HELLO_ACK
-                val sessionId = (Math.random() * Int.MAX_VALUE).toInt()
-                tcp.getOutputStream().write(HelloAckPacket(sessionId, inputDelay).encode())
-
-                val udp = DatagramSocket(udpPort)
-                udp.soTimeout = UDP_SO_TIMEOUT_MS
-                val remote = InetSocketAddress(tcp.inetAddress, udpPort)
-                Log.i(TAG, "host session established with ${tcp.inetAddress}, delay=$inputDelay")
-                return NetplaySession(Role.HOST, inputDelay, tcp, udp, remote)
+                @Suppress("UNREACHABLE_CODE")
+                throw IllegalStateException("unreachable")
             } finally {
                 try { server.close() } catch (_: Throwable) {}
             }
@@ -394,6 +578,7 @@ class NetplaySession private constructor(
          */
         fun connectAsClient(
             hostAddress: String,
+            gameName: String,
             nickname: String = "player2",
             tcpPort: Int = Protocol.DEFAULT_TCP_PORT,
             udpPort: Int = Protocol.DEFAULT_UDP_PORT,
@@ -404,15 +589,40 @@ class NetplaySession private constructor(
             tcp.tcpNoDelay = true
             tcp.soTimeout = TCP_SO_TIMEOUT_MS
 
-            tcp.getOutputStream().write(HelloPacket(nickname).encode())
+            tcp.getOutputStream().write(HelloPacket(nickname, gameName).encode())
+            tcp.getOutputStream().flush()
 
+            // El host puede: (a) rechazarnos (REJECT), (b) sondear RTT
+            // (PING × N — respondemos PONG eco), (c) aceptarnos
+            // (HELLO_ACK). Procesamos opcodes hasta ver el ACK.
             val ins = tcp.getInputStream()
             val hdr = ByteArray(4)
-            if (!readFully(ins, hdr) ||
-                hdr[0] != Protocol.MAGIC_0 || hdr[1] != Protocol.MAGIC_1 ||
-                hdr[2] != Protocol.VERSION || hdr[3] != Protocol.OP_HELLO_ACK) {
-                tcp.close()
-                throw RuntimeException("bad HELLO_ACK from host")
+            while (true) {
+                if (!readFully(ins, hdr) ||
+                    hdr[0] != Protocol.MAGIC_0 || hdr[1] != Protocol.MAGIC_1 ||
+                    hdr[2] != Protocol.VERSION) {
+                    tcp.close()
+                    throw RuntimeException("bad handshake from host")
+                }
+                when (hdr[3]) {
+                    Protocol.OP_PING -> {
+                        val p = ByteArray(12)
+                        if (!readFully(ins, p)) { tcp.close(); throw RuntimeException("ping cut short") }
+                        val b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN)
+                        val seq = b.int; val nanos = b.long
+                        tcp.getOutputStream().write(PingPacket(seq, nanos).encode(Protocol.OP_PONG))
+                        tcp.getOutputStream().flush()
+                    }
+                    Protocol.OP_REJECT -> {
+                        val r = ins.read()
+                        tcp.close()
+                        throw GameMismatchException(
+                            if (r == RejectPacket.REASON_GAME_MISMATCH.toInt())
+                                "la sala es de otro juego" else "sala rechazó la conexión ($r)")
+                    }
+                    Protocol.OP_HELLO_ACK -> break
+                    else -> { tcp.close(); throw RuntimeException("unexpected opcode ${hdr[3]} in handshake") }
+                }
             }
             val payload = ByteArray(8)
             readFully(ins, payload)
@@ -438,6 +648,9 @@ class NetplaySession private constructor(
         }
     }
 }
+
+/** El host rechazó la conexión porque su sala es de otro juego. */
+class GameMismatchException(message: String) : RuntimeException(message)
 
 /** Report captured when the two peers' work-RAM CRCs diverge. */
 data class DesyncReport(
