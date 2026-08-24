@@ -16,6 +16,7 @@ pub mod bus;
 pub mod cmc;
 pub mod cmc_tables;
 pub mod prot;
+pub mod pcm2;
 pub mod pvc;
 pub mod rom;
 pub mod upd4990a;
