@@ -1,0 +1,10 @@
+Este directorio va a contener libpydmg_neogeo_jni.so tras compilar.
+
+Regenera los .so ejecutando desde la raíz del proyecto:
+
+    cd source && ./build-android.sh          # Linux / macOS / WSL
+    cd source && build-android.bat           # Windows
+
+Los .so viejos (pre-fix del audio) se eliminaron a proposito para
+que nadie ensamble un APK mezclando el codigo Rust nuevo con .so
+antiguos que aun tenian el bug del resampling a 55555 Hz.

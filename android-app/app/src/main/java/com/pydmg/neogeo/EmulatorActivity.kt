@@ -1,0 +1,372 @@
+package com.pydmg.neogeo
+
+import android.annotation.SuppressLint
+import android.os.Bundle
+import android.util.Log
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import androidx.appcompat.app.AppCompatActivity
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Landscape, fullscreen game activity. All emulation runs here on a
+ * dedicated thread; this activity is finished when the user taps
+ * "Salir al menú" so LibraryActivity (portrait) becomes visible again.
+ */
+class EmulatorActivity : AppCompatActivity() {
+
+    private lateinit var emulatorView: EmulatorView
+    private lateinit var audio: AudioEngine
+
+    private lateinit var p1LeftControls: View
+    private lateinit var p1Dpad: View
+    private lateinit var p1Joystick: JoystickView
+    private lateinit var p1Abcd: View
+    private lateinit var p2LeftControls: View
+    private lateinit var p2Dpad: View
+    private lateinit var p2Joystick: JoystickView
+    private lateinit var p2Abcd: View
+    private lateinit var btnCoinP2: View
+    private lateinit var btnStartP2: View
+
+    private lateinit var pauseOverlay: View
+
+    private val running = AtomicBoolean(false)
+    private var emuThread: Thread? = null
+    private val paused = AtomicBoolean(false)
+
+    private val p1Mask = AtomicInteger(0)
+    private val p2Mask = AtomicInteger(0)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setContentView(R.layout.activity_emulator)
+
+        bindViews()
+        wireHud()
+        wireControls()
+        applyControlPreferences()
+
+        audio = AudioEngine()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        hideSystemUI()
+        applyControlPreferences()
+        paused.set(false)
+        pauseOverlay.visibility = View.GONE
+        startEmulatorLoop()
+    }
+
+    override fun onPause() {
+        stopEmulatorLoop()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        stopEmulatorLoop()
+        try { audio.release() } catch (_: Throwable) {}
+        // Close the LAN netplay session (if any) so sockets are
+        // released and NsdManager stops advertising the host. The
+        // volatile reference on PydmgApp is cleared so the next game
+        // launch starts fresh.
+        try { PydmgApp.app.netSession?.close() } catch (_: Throwable) {}
+        PydmgApp.app.netSession = null
+        super.onDestroy()
+    }
+
+    @SuppressLint("MissingSuperCall")
+    @Suppress("DEPRECATION")  // pre-API 33 fallback
+    @Deprecated("Manual back handling kept for simplicity.")
+    override fun onBackPressed() {
+        if (pauseOverlay.visibility == View.VISIBLE) {
+            // Hide the pause overlay and resume.
+            pauseOverlay.visibility = View.GONE
+            paused.set(false)
+        } else {
+            // First back press shows the pause overlay; a second one
+            // exits via btn_back_to_library. We deliberately do NOT call
+            // super.onBackPressed() here: we want the user to always pass
+            // through the pause overlay before leaving the emulator.
+            paused.set(true)
+            pauseOverlay.visibility = View.VISIBLE
+        }
+    }
+
+    // ---------- Binding ----------
+
+    private fun bindViews() {
+        emulatorView = findViewById(R.id.emulator_view)
+        p1LeftControls = findViewById(R.id.p1_left_controls)
+        p1Dpad = findViewById(R.id.dpad_container)
+        p1Joystick = findViewById(R.id.joystick_p1)
+        p1Abcd = findViewById(R.id.abcd_pad)
+        p2LeftControls = findViewById(R.id.p2_left_controls)
+        p2Dpad = findViewById(R.id.dpad_p2_container)
+        p2Joystick = findViewById(R.id.joystick_p2)
+        p2Abcd = findViewById(R.id.p2_abcd_pad)
+        btnCoinP2 = findViewById(R.id.btn_coin_p2)
+        btnStartP2 = findViewById(R.id.btn_start_p2)
+        pauseOverlay = findViewById(R.id.pause_overlay)
+    }
+
+    private fun wireHud() {
+        findViewById<Button>(R.id.btn_hud_menu).setOnClickListener {
+            paused.set(true)
+            pauseOverlay.visibility = View.VISIBLE
+        }
+        findViewById<Button>(R.id.btn_resume).setOnClickListener {
+            paused.set(false)
+            pauseOverlay.visibility = View.GONE
+        }
+        findViewById<Button>(R.id.btn_back_to_library).setOnClickListener {
+            finish()
+        }
+
+        bindTouch(R.id.btn_coin_p1,   1, NativeBridge.BTN_COIN)
+        bindTouch(R.id.btn_select_p1, 1, NativeBridge.BTN_SELECT)
+        bindTouch(R.id.btn_start_p1,  1, NativeBridge.BTN_START)
+        bindTouch(R.id.btn_coin_p2,   2, NativeBridge.BTN_COIN)
+        bindTouch(R.id.btn_start_p2,  2, NativeBridge.BTN_START)
+    }
+
+    private fun wireControls() {
+        // P1 D-pad
+        bindTouch(R.id.dpad_up,    1, NativeBridge.BTN_UP)
+        bindTouch(R.id.dpad_down,  1, NativeBridge.BTN_DOWN)
+        bindTouch(R.id.dpad_left,  1, NativeBridge.BTN_LEFT)
+        bindTouch(R.id.dpad_right, 1, NativeBridge.BTN_RIGHT)
+        // P1 face
+        bindTouch(R.id.btn_a, 1, NativeBridge.BTN_A)
+        bindTouch(R.id.btn_b, 1, NativeBridge.BTN_B)
+        bindTouch(R.id.btn_c, 1, NativeBridge.BTN_C)
+        bindTouch(R.id.btn_d, 1, NativeBridge.BTN_D)
+        // P2 compact
+        bindTouch(R.id.dpad2_up,    2, NativeBridge.BTN_UP)
+        bindTouch(R.id.dpad2_down,  2, NativeBridge.BTN_DOWN)
+        bindTouch(R.id.dpad2_left,  2, NativeBridge.BTN_LEFT)
+        bindTouch(R.id.dpad2_right, 2, NativeBridge.BTN_RIGHT)
+        bindTouch(R.id.btn2_a, 2, NativeBridge.BTN_A)
+        bindTouch(R.id.btn2_b, 2, NativeBridge.BTN_B)
+        bindTouch(R.id.btn2_c, 2, NativeBridge.BTN_C)
+        bindTouch(R.id.btn2_d, 2, NativeBridge.BTN_D)
+
+        p1Joystick.onDirectionMaskChanged = { setDirectionalMask(1, it) }
+        p2Joystick.onDirectionMaskChanged = { setDirectionalMask(2, it) }
+    }
+
+    // ---------- Preferences ----------
+
+    private fun applyControlPreferences() {
+        val useJoystick = PydmgApp.prefs.useJoystick
+        val mp = PydmgApp.prefs.localMultiplayer
+        val alpha = PydmgApp.prefs.controlOpacity
+        val scale = PydmgApp.prefs.controlScale
+
+        listOf(p1LeftControls, p1Abcd, p2LeftControls, p2Abcd, findViewById(R.id.top_hud_bar)).forEach {
+            it.alpha = alpha
+        }
+        listOf(p1LeftControls, p1Abcd, p2LeftControls, p2Abcd).forEach {
+            it.scaleX = scale; it.scaleY = scale
+        }
+
+        p1Dpad.visibility = if (useJoystick) View.GONE else View.VISIBLE
+        p1Joystick.visibility = if (useJoystick) View.VISIBLE else View.GONE
+        p2Dpad.visibility = if (useJoystick) View.GONE else View.VISIBLE
+        p2Joystick.visibility = if (useJoystick) View.VISIBLE else View.GONE
+
+        val v2 = if (mp) View.VISIBLE else View.GONE
+        p2LeftControls.visibility = v2
+        p2Abcd.visibility = v2
+        btnCoinP2.visibility = v2
+        btnStartP2.visibility = v2
+
+        // Clear stale directional inputs whenever the control mode flips.
+        setDirectionalMask(1, 0)
+        if (!mp) p2Mask.set(0) else setDirectionalMask(2, 0)
+
+        // Bilinear filtering toggle goes here when EmulatorView supports it.
+        emulatorView.smoothFilter = PydmgApp.prefs.smoothFilter
+        emulatorView.cropScreen = PydmgApp.prefs.cropScreen
+    }
+
+    // ---------- Emulator loop ----------
+
+    private fun startEmulatorLoop() {
+        if (running.get()) return
+        running.set(true)
+        // Note: `audio.start()` is deferred by 2 emulated frames so
+        // the AAudio ring has time to prime. See the comment inside
+        // the emu loop where `audio.start()` is actually invoked.
+        emuThread = Thread({
+            // v4-audio: NO more `Thread.sleep(next - now)` pacing.
+            //
+            // On Android, `Thread.sleep` under 5 ms is extremely
+            // imprecise (documented 10–25 ms slack even on flagship
+            // hardware), which regularly caused the loop to run at
+            // 45–55 fps even when the emu itself needed <5 ms per
+            // frame. Instead we use SurfaceHolder.lockCanvas /
+            // unlockCanvasAndPost as our natural VSYNC — the compositor
+            // blocks us on the display refresh boundary anyway, which
+            // IS the 60 Hz clock we want.
+            //
+            // Audio timing is decoupled: the AAudio callback thread
+            // drains from the SPSC ring at its own real-time cadence.
+            // If the emu overshoots one frame every now and then, the
+            // ring absorbs it; if it undershoots, AAudio zero-pads (a
+            // single sample glitch nobody hears).
+            val net = PydmgApp.app.netSession
+            var localFrameCounter = 0
+            var audioStarted = false
+            while (running.get()) {
+                // Session death → bail back to the library.
+                if (net != null && !net.alive.get()) {
+                    runOnUiThread {
+                        android.widget.Toast.makeText(
+                            this@EmulatorActivity,
+                            R.string.netplay_peer_left,
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        finish()
+                    }
+                    break
+                }
+                val netPaused = net?.paused?.get() == true
+                if (!paused.get() && !netPaused) {
+                    if (net == null) {
+                        // ------ Solo / local co-op path (v3 original). ------
+                        NativeBridge.nativeSetPlayerInputs(p1Mask.get(), p2Mask.get())
+                    } else {
+                        // ---------------- LAN netplay path ----------------
+                        // The local mask depends on our role: HOST is
+                        // always P1, CLIENT is always P2. The `p1Mask`
+                        // AtomicInteger in this activity is the mask
+                        // filled from the on-screen controls, and it's
+                        // "our" mask regardless of role (there is only
+                        // one visible pad on each device).
+                        val localMask = p1Mask.get()
+                        net.publishLocalInputs(localMask)
+                        val (p1, p2) = net.pollFrameInputs()
+                        NativeBridge.nativeSetPlayerInputs(p1, p2)
+                    }
+                    NativeBridge.nativeRunFrame()
+
+                    // Start the AAudio stream only AFTER we've run
+                    // a couple of emu frames, so the SPSC ring is
+                    // pre-filled with ~1800 samples (~33 ms at
+                    // 55555 Hz). Without this two-stage warmup the
+                    // first audio burst hits an empty ring and the
+                    // callback zero-pads → audible click storm at
+                    // t=0.
+                    if (!audioStarted && localFrameCounter >= 2) {
+                        audio.start()
+                        audioStarted = true
+                    }
+
+                    audio.pump()
+                    emulatorView.presentFrame()
+
+                    // Frame counter must advance every emu tick,
+                    // both solo and netplay, so the AAudio warmup
+                    // check above fires reliably.
+                    localFrameCounter++
+
+                    // Netplay bookkeeping: advance the shared clock,
+                    // then exchange a keyframe once a second so both
+                    // peers can detect a desync fast.
+                    if (net != null) {
+                        net.advanceFrame()
+                        if (localFrameCounter % 60 == 0) {
+                            val f = NativeBridge.nativeFrameCounter()
+                            val crc = NativeBridge.nativeStateChecksum()
+                            if (net.role == com.pydmg.neogeo.net.NetplaySession.Role.HOST) {
+                                net.sendKeyframe(f, crc)
+                            } else {
+                                net.compareOrQueueLocalKeyframe(f, crc)
+                            }
+                        }
+                        // If a desync was reported, surface it and
+                        // stay paused until the user backs out.
+                        net.desync.get()?.let { d ->
+                            runOnUiThread {
+                                android.widget.Toast.makeText(
+                                    this@EmulatorActivity,
+                                    getString(R.string.netplay_desync, d.frame),
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                                pauseOverlay.visibility = View.VISIBLE
+                            }
+                        }
+                    }
+                }
+                // Note: no Thread.sleep here — presentFrame() blocks on
+                // the compositor VSYNC (SurfaceView’s lockCanvas is
+                // synchronised to the display refresh boundary), so
+                // the loop already runs at the display rate. Pause
+                // handling is the only reason we need to yield when we
+                // skipped the emu tick.
+                if (paused.get() || (net?.paused?.get() == true)) {
+                    try { Thread.sleep(16) } catch (_: InterruptedException) { break }
+                }
+            }
+            audio.stop()
+        }, "neogeo-emu").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    private fun stopEmulatorLoop() {
+        if (!running.get()) return
+        running.set(false)
+        emuThread?.interrupt()
+        try { emuThread?.join(1000) } catch (_: Throwable) {}
+        emuThread = null
+    }
+
+    // ---------- Input plumbing ----------
+
+    private fun bindTouch(viewId: Int, player: Int, bit: Int) {
+        val v: View = findViewById(viewId) ?: return
+        v.setOnTouchListener { view, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    setBit(player, bit, true); view.isPressed = true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                    setBit(player, bit, false); view.isPressed = false
+                }
+            }
+            true
+        }
+    }
+
+    private fun setBit(player: Int, bit: Int, pressed: Boolean) {
+        val atomic = if (player == 1) p1Mask else p2Mask
+        atomic.updateAndGet { old -> if (pressed) old or bit else old and bit.inv() }
+    }
+
+    private fun setDirectionalMask(player: Int, dirMask: Int) {
+        val atomic = if (player == 1) p1Mask else p2Mask
+        atomic.updateAndGet { old ->
+            (old and NativeBridge.DIR_MASK.inv()) or dirMask
+        }
+    }
+
+    private fun hideSystemUI() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+    }
+}

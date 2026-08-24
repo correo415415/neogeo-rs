@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Base theme: Material 3 dark. We deliberately use the same M3 base
+      everywhere so that MaterialSwitch, Slider, MaterialButton and
+      MaterialCardView all inflate against a coherent attribute set.
+      Mixing in any legacy AppCompat *Switch* widget here crashes layout
+      inflation on devices where AppCompat resolves `?attr/colorPrimary`
+      against the M3 theme, so we stick to the M3 variants.
+    -->
+    <style name="Theme.PydmgNeogeo" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand_amber</item>
+        <item name="colorOnPrimary">@color/bg_root</item>
+        <item name="colorPrimaryContainer">@color/brand_amber_dim</item>
+        <item name="colorOnPrimaryContainer">@color/fg_primary</item>
+        <item name="colorSecondary">@color/brand_red</item>
+        <item name="colorOnSecondary">@color/fg_primary</item>
+        <item name="colorSurface">@color/bg_surface</item>
+        <item name="colorOnSurface">@color/fg_primary</item>
+        <item name="colorSurfaceVariant">@color/bg_surface_2</item>
+        <item name="colorOnSurfaceVariant">@color/fg_secondary</item>
+        <item name="colorOutline">@color/divider</item>
+        <item name="android:windowBackground">@color/bg_root</item>
+        <item name="android:statusBarColor">@color/bg_root</item>
+        <item name="android:navigationBarColor">@color/bg_root</item>
+    </style>
+
+    <!-- Fullscreen variant for the emulator (landscape). -->
+    <style name="Theme.PydmgNeogeo.Fullscreen" parent="Theme.PydmgNeogeo">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="o_mr1">shortEdges</item>
+        <item name="android:windowTranslucentStatus">false</item>
+        <item name="android:windowTranslucentNavigation">false</item>
+    </style>
+
+    <!-- ====== Reusable text styles ====== -->
+    <style name="Text.Display" parent="TextAppearance.Material3.DisplaySmall">
+        <item name="android:textColor">@color/fg_primary</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="Text.Title" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textColor">@color/fg_primary</item>
+    </style>
+    <style name="Text.Body" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/fg_secondary</item>
+    </style>
+    <style name="Text.Caption" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textColor">@color/fg_tertiary</item>
+    </style>
+
+</resources>

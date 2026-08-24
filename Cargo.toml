@@ -1,0 +1,65 @@
+# ============================================================================
+#  pydmg-neogeo — repo root = ANDROID port
+#
+#  Layout del repositorio:
+#    /               → puerto Android (este workspace)
+#      neogeo/       → copia del core Rust del emulador (duplicado del core
+#                      de pydmg/neogeo, sin SDL2: sólo la librería)
+#      android-jni/  → puente JNI (cdylib) usado por la app Kotlin
+#      android-app/  → aplicación Android nativa (Kotlin + Gradle)
+#      build-android.sh / .bat → cross-compilación + APK
+#    /pydmg          → emulador de PC completo (core + CLI + GUI SDL2 +
+#                      tests + docs + examples). Es un paquete independiente,
+#                      EXCLUIDO de este workspace: compílalo con
+#                      `cd pydmg && cargo build --release`.
+# ============================================================================
+
+[workspace]
+members = [".", "android-jni"]
+exclude = ["pydmg"]
+resolver = "2"
+
+[package]
+name = "pydmg-neogeo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["pydmg-neogeo contributors"]
+description = "Neo Geo emulator core (Android copy) — library-only, no SDL2"
+
+[lib]
+name = "pydmg_neogeo"
+path = "neogeo/lib.rs"
+
+[features]
+# La copia raíz del core es sólo-librería (Android). No hay binario ni GUI
+# aquí; el frontend de PC vive en pydmg/. Se mantiene la feature `cli`
+# vacía-compatible para que `default-features = false` del crate JNI siga
+# funcionando igual que en el layout original.
+default = []
+
+[dependencies]
+log = "0.4"
+thiserror = "2.0"
+anyhow = "1.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+once_cell = "1.21"
+
+[dev-dependencies]
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Perfil para la build Android: panic=abort ahorra ~150 KB del .so al no
+# incluir el unwinder; strip elimina símbolos de depuración.
+# build-android.sh compila con `--profile android-release`.
+[profile.android-release]
+inherits = "release"
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

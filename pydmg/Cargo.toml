@@ -1,3 +1,6 @@
+# Paquete independiente: NO forma parte del workspace Android de la raíz.
+[workspace]
+
 [package]
 name = "pydmg-neogeo"
 version = "0.1.0"
@@ -32,14 +35,26 @@ path = "neogeo/lib.rs"
 [[bin]]
 name = "pydmg-neogeo"
 path = "cli/main.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "fm_test"
 path = "examples/fm_test.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "dump_sprites"
 path = "examples/dump_sprites.rs"
+required-features = ["cli"]
+
+[features]
+# Default: feature `cli` ENABLED so `cargo build --release` from the root
+# still produces the SDL2 binary exactly as before. The Android build
+# compiles the `android-jni` crate with `default-features = false` on
+# this crate, so SDL2/clap/env_logger never enter the cross-compile
+# dependency graph.
+default = ["cli"]
+cli = ["dep:clap", "dep:env_logger", "dep:sdl2"]
 
 [dependencies]
 log = "0.4"
@@ -47,9 +62,11 @@ thiserror = "2.0"
 anyhow = "1.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 once_cell = "1.21"
-clap = { version = "4", features = ["derive"] }
-env_logger = "0.11"
-sdl2 = "0.38"
+
+# CLI-only deps (gated behind the `cli` feature)
+clap = { version = "4", features = ["derive"], optional = true }
+env_logger = { version = "0.11", optional = true }
+sdl2 = { version = "0.38", optional = true }
 
 [dev-dependencies]
 env_logger = "0.11"

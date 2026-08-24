@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">pydmg-neogeo</string>
+    <string name="app_subtitle">Neo Geo emulator</string>
+
+    <!-- Tabs -->
+    <string name="tab_library">Biblioteca</string>
+    <string name="tab_settings">Ajustes</string>
+
+    <!-- Library -->
+    <string name="library_title">Tu colección</string>
+    <string name="library_subtitle_count">%1$d cartuchos detectados</string>
+    <string name="library_empty_title">Aún no hay ROMs</string>
+    <string name="library_empty_body">Conecta una carpeta de ROMs o carga un .zip manualmente desde el panel inferior.</string>
+    <string name="library_scan">Reescanear</string>
+    <string name="library_load_zip">Cargar .zip</string>
+    <string name="library_pick_folder">Elegir carpeta</string>
+    <string name="library_search_hint">Buscar cartucho…</string>
+
+    <!-- BIOS -->
+    <string name="bios_loaded">BIOS: %1$s</string>
+    <string name="bios_missing">BIOS: no cargada</string>
+    <string name="bios_pick">Cambiar BIOS</string>
+    <string name="bios_pick_first">Elegir BIOS (neogeo.zip)</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Ajustes</string>
+    <string name="settings_section_controls">Controles</string>
+    <string name="settings_use_joystick">Joystick analógico en lugar de cruceta</string>
+    <string name="settings_local_multiplayer">Multijugador local (mostrar P2)</string>
+    <string name="settings_opacity">Opacidad de controles</string>
+    <string name="settings_scale">Escala de controles</string>
+    <string name="settings_section_video">Vídeo</string>
+    <string name="settings_crop">Recortar a 304×224 (zona segura)</string>
+    <string name="settings_smooth">Filtrado bilineal (suavizar imagen)</string>
+    <string name="settings_section_storage">Almacenamiento</string>
+    <string name="settings_folder">Carpeta de ROMs</string>
+    <string name="settings_pick_folder">Elegir carpeta…</string>
+    <string name="settings_rescan">Reescanear carpeta</string>
+    <string name="settings_section_about">Acerca de</string>
+    <string name="settings_about_body">pydmg-neogeo — port Android del emulador Neo Geo en Rust. Compatible con MVS/AES, cargador SAF, sonido nativo a 55 555 Hz.</string>
+
+    <!-- Errors / Toasts -->
+    <string name="ready">Listo. Inserta moneda y pulsa START.</string>
+    <string name="err_bios">No se pudo cargar la BIOS</string>
+    <string name="err_cart">No se pudo cargar el cartucho</string>
+    <string name="err_folder">No se pudo leer la carpeta de ROMs</string>
+    <string name="loading_cart">Cargando %1$s…</string>
+    <string name="bios_needed">Carga primero una BIOS antes de jugar.</string>
+
+    <!-- In-game HUD -->
+    <string name="hud_menu">Menú</string>
+    <string name="hud_pause">Pausa</string>
+    <string name="hud_coin">COIN</string>
+    <string name="hud_select">SELECT</string>
+    <string name="hud_start">START</string>
+    <string name="hud_back_to_library">Salir al menú</string>
+
+    <!-- Buttons -->
+    <string name="btn_a">A</string>
+    <string name="btn_b">B</string>
+    <string name="btn_c">C</string>
+    <string name="btn_d">D</string>
+
+    <!-- Netplay -->
+    <string name="netplay_title">Multijugador LAN</string>
+    <string name="netplay_pick_a_role">Crea una partida (serás P1) o únete a una existente (serás P2).</string>
+    <string name="netplay_host">Crear partida (esperar al P2)</string>
+    <string name="netplay_or">— o —</string>
+    <string name="netplay_ip_hint">IP manual (opcional)</string>
+    <string name="netplay_join_manual">Unirse</string>
+    <string name="netplay_cancel">Cancelar</string>
+    <string name="netplay_hosting_wait">Esperando al P2 en %1$s (puerto %2$d)…</string>
+    <string name="netplay_connecting">Conectando a %1$s…</string>
+    <string name="netplay_ready">¡Conexión establecida!</string>
+    <string name="netplay_error">Error: %1$s</string>
+    <string name="netplay_desync">Desincronización detectada en el frame %1$d. Pausado.</string>
+    <string name="netplay_peer_left">El otro jugador se ha desconectado.</string>
+    <string name="settings_lan_multiplayer">Multijugador en red LAN</string>
+    <string name="settings_lan_multiplayer_hint">Usa Wi-Fi. El siguiente cartucho que abras lanzará el asistente de partida.</string>
+</resources>

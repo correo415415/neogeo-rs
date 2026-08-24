@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Storage strategy:
+        * SAF picker for ROM zips + tree picker for the ROM folder.
+        * No need for READ_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE on
+          modern Android; SAF gives us persistent URI permissions.
+
+      Netplay (LAN multiplayer):
+        * INTERNET permission is enough for local sockets. We deliberately
+          do NOT request ACCESS_FINE_LOCATION even though old Android
+          releases required it for mDNS/NSD scans — API 33+ removed that
+          gate, and our minSdk 24 falls back gracefully if NSD is denied.
+        * ACCESS_WIFI_STATE is used only to detect "user has no WiFi" and
+          show a friendly hint instead of a socket failure.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <uses-feature android:glEsVersion="0x00020000" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:name=".PydmgApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.PydmgNeogeo"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:hasFragileUserData="false"
+        tools:targetApi="34">
+
+        <!--
+          LibraryActivity: portrait. Frontend profesional (biblioteca de
+          ROMs, BIOS, ajustes, navegación con tabs). NUNCA gira a
+          landscape; orientación fijada explícitamente para evitar que
+          el menú lateral / dialogs re-inflen con anchura insuficiente.
+        -->
+        <activity
+            android:name=".LibraryActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="keyboardHidden|uiMode|density"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.PydmgNeogeo">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          EmulatorActivity: landscape, fullscreen, sin status bar. Sólo
+          se abre cuando el usuario elige un cartucho desde la
+          biblioteca. Al pulsar back (o el botón del menú in-game)
+          vuelve a LibraryActivity en portrait.
+        -->
+        <activity
+            android:name=".EmulatorActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|density"
+            android:resizeableActivity="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.PydmgNeogeo.Fullscreen" />
+
+        <!--
+          NetplayActivity: portrait, transient. Shows the discovery /
+          host-or-join wizard, then hands off to EmulatorActivity when
+          the session is established.
+        -->
+        <activity
+            android:name=".NetplayActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.PydmgNeogeo" />
+
+    </application>
+</manifest>
