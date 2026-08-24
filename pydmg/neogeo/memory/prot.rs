@@ -36,7 +36,7 @@ fn bits(x: u32, n: u32, w: u32) -> u32 {
 /// MAME `bitswap<N>(val, bN-1, .., b0)`: first listed source bit becomes the
 /// result MSB. Generic over the number of bits via the slice length.
 #[inline]
-fn bitswap(val: u32, srcs: &[u32]) -> u32 {
+pub fn bitswap(val: u32, srcs: &[u32]) -> u32 {
     let n = srcs.len();
     let mut r = 0u32;
     for (i, &b) in srcs.iter().enumerate() {
@@ -616,6 +616,7 @@ pub enum CartProt {
     Kof98(Kof98Prot),
     MslugX(MslugXProt),
     Sma(SmaProt),
+    Pvc(super::pvc::PvcProt),
 }
 
 /// Map a MAME set name to its protection device — the software counterpart
@@ -636,6 +637,15 @@ pub fn detect_protection(name: &str) -> CartProt {
         "mslug3" => CartProt::Sma(SmaProt::new(SmaGame::Mslug3)),
         "mslug3a" => CartProt::Sma(SmaProt::new(SmaGame::Mslug3a)),
         "kof2000" => CartProt::Sma(SmaProt::new(SmaGame::Kof2000)),
+        // PVC protection chip (cart RAM at $2FE000 + banked P-ROM descramble).
+        "mslug5" | "mslug5h" => {
+            CartProt::Pvc(super::pvc::PvcProt::new(super::pvc::PvcGame::Mslug5))
+        }
+        "svc" => CartProt::Pvc(super::pvc::PvcProt::new(super::pvc::PvcGame::Svc)),
+        "kof2003" => CartProt::Pvc(super::pvc::PvcProt::new(super::pvc::PvcGame::Kof2003)),
+        "kof2003h" => {
+            CartProt::Pvc(super::pvc::PvcProt::new(super::pvc::PvcGame::Kof2003h))
+        }
         _ => CartProt::None,
     }
 }

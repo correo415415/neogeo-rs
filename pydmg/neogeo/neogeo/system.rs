@@ -194,6 +194,45 @@ impl System {
             region[0x100000..0x100000 + n].copy_from_slice(&p_data[..n]);
             p_data = region;
         }
+        if let crate::memory::prot::CartProt::Pvc(p) = &prot {
+            // PVC carts ship two 4MiB P-ROMs loaded with
+            // ROM_LOAD32_WORD_SWAP: p1 words at region offset 4k, p2 words
+            // at 4k+2. Our loader concatenated them (sorted by name), so
+            // rebuild the interleaved layout from the two halves while the
+            // data is still in on-disk byte order — `load_p_rom`'s uniform
+            // per-word swap then matches MAME's logical BE region.
+            // kof2003(h) additionally has a plain 1MiB p3 at $800000
+            // (ROM_LOAD16_WORD_SWAP), which stays appended as-is.
+            let region_size = match p.game {
+                crate::memory::pvc::PvcGame::Mslug5 | crate::memory::pvc::PvcGame::Svc => {
+                    0x800000
+                }
+                _ => 0x900000,
+            };
+            if p_data.len() >= 0x800000 {
+                let mut region = vec![0u8; region_size];
+                for k in 0..0x200000 {
+                    region[4 * k..4 * k + 2]
+                        .copy_from_slice(&p_data[2 * k..2 * k + 2]);
+                    region[4 * k + 2..4 * k + 4]
+                        .copy_from_slice(&p_data[0x400000 + 2 * k..0x400000 + 2 * k + 2]);
+                }
+                if region_size == 0x900000 && p_data.len() >= 0x900000 {
+                    region[0x800000..0x900000]
+                        .copy_from_slice(&p_data[0x800000..0x900000]);
+                }
+                log::info!(
+                    "PVC cart '{}': assembled {:#x} P region (32-bit p1/p2 interleave)",
+                    romset.cart.name, region_size
+                );
+                p_data = region;
+            } else {
+                log::warn!(
+                    "PVC cart '{}' P data too small ({:#x}) — expected two 4MiB ROMs; skipping interleave",
+                    romset.cart.name, p_data.len()
+                );
+            }
+        }
         if !p_data.is_empty() {
             self.bus.load_p_rom(p_data);
         }
@@ -212,6 +251,25 @@ impl System {
             crate::memory::prot::CartProt::Sma(p) => {
                 log::info!("SMA cart '{}': decrypting 68K ROM", romset.cart.name);
                 crate::memory::prot::sma_decrypt(p.game, &mut self.bus.p_rom);
+            }
+            crate::memory::prot::CartProt::Pvc(p) => {
+                let need = match p.game {
+                    crate::memory::pvc::PvcGame::Mslug5
+                    | crate::memory::pvc::PvcGame::Svc => 0x800000,
+                    _ => 0x900000,
+                };
+                if self.bus.p_rom.len() >= need {
+                    log::info!(
+                        "PVC cart '{}': descrambling 68K ROM ({:?})",
+                        romset.cart.name, p.game
+                    );
+                    crate::memory::pvc::pvc_decrypt_68k(p.game, &mut self.bus.p_rom);
+                } else {
+                    log::warn!(
+                        "PVC P region too small ({:#X} < {need:#X}) — skipping decrypt",
+                        self.bus.p_rom.len()
+                    );
+                }
             }
             _ => {}
         }
@@ -287,6 +345,35 @@ impl System {
         // at runtime by HC259 Q5 = 0 — install it alongside the cart M1.
         if !romset.sm1.is_empty() {
             self.audio.install_sm1(romset.sm1);
+        }
+        // ==== NEO-PCM2 V-ROM decryption ====
+        // Must run on the concatenated ADPCM region before the YM2610
+        // splits it into A/B blobs (MAME runs it on the whole ymsnd region).
+        if let Some(mode) = crate::memory::pcm2::detect_pcm2(&romset.cart.name) {
+            let mut blob: Vec<u8> = Vec::with_capacity(
+                romset.cart.v_roms.iter().map(|(_, d)| d.len()).sum(),
+            );
+            for (_, d) in &romset.cart.v_roms {
+                blob.extend_from_slice(d);
+            }
+            log::info!(
+                "NEO-PCM2 cart '{}': {:?} on {:#x}-byte V region",
+                romset.cart.name, mode, blob.len()
+            );
+            match mode {
+                crate::memory::pcm2::Pcm2Mode::Decrypt(value) => {
+                    crate::memory::pcm2::pcm2_decrypt(&mut blob, value);
+                }
+                crate::memory::pcm2::Pcm2Mode::Swap(value) => {
+                    if blob.len() < 0x1000000 {
+                        blob.resize(0x1000000, 0);
+                    }
+                    crate::memory::pcm2::pcm2_swap(&mut blob, value);
+                }
+            }
+            // Single shared blob: the YM2610 aliases it into both the
+            // ADPCM-A and ADPCM-B address spaces, matching MAME's fallback.
+            romset.cart.v_roms = vec![("pcm2.v".to_string(), blob)];
         }
         if !romset.cart.v_roms.is_empty() {
             self.audio.ym.install_v_roms(&romset.cart.v_roms);
