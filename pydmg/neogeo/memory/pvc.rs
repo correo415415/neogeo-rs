@@ -61,12 +61,20 @@ impl PvcProt {
         self.cart_ram[offset & 0xfff]
     }
 
-    /// 16-bit write. Returns `Some(bank_base)` when the write triggers a
-    /// P-ROM bankswitch (offset >= 0xff8), which the bus must apply to its
-    /// banked $200000-$2FFFFF window.
-    pub fn protection_w(&mut self, offset: usize, data: u16) -> Option<usize> {
+    /// 16-bit write with byte-lane mask (MAME `COMBINE_DATA` semantics).
+    /// Returns `Some(bank_base)` when the write triggers a P-ROM bankswitch
+    /// (offset >= 0xff8), which the bus must apply to its banked
+    /// $200000-$2FFFFF window.
+    ///
+    /// `mem_mask` matters: kof2003's zoom-table loader at $14520 does
+    /// `move.b d0,$2FFFF0.l` — a genuine BYTE write to the high lane of the
+    /// bank register at word offset $FF8. Dropping that byte shifts the bank
+    /// base (e.g. $2D99A8 → $2D9900), the game then reads garbage zoom
+    /// tables through the banked window and smashes its own stack (boot
+    /// loop: RTS at $14A06 pops 0).
+    pub fn protection_w(&mut self, offset: usize, data: u16, mem_mask: u16) -> Option<usize> {
         let offset = offset & 0xfff;
-        self.cart_ram[offset] = data;
+        self.cart_ram[offset] = (self.cart_ram[offset] & !mem_mask) | (data & mem_mask);
         if offset == 0xff0 {
             self.write_unpack_color();
         } else if (0xff4..=0xff5).contains(&offset) {
@@ -321,12 +329,12 @@ mod tests {
     fn pvc_color_pack_unpack_roundtrip() {
         let mut pvc = PvcProt::new(PvcGame::Mslug5);
         for &pen in &[0x0000u16, 0xffff, 0x1234, 0x8ace, 0x7531] {
-            pvc.protection_w(0xff0, pen);
+            pvc.protection_w(0xff0, pen, 0xffff);
             let gb = pvc.protection_r(0xff1);
             let sr = pvc.protection_r(0xff2);
             // Re-pack what the unpack produced.
-            pvc.protection_w(0xff4, gb);
-            pvc.protection_w(0xff5, sr);
+            pvc.protection_w(0xff4, gb, 0xffff);
+            pvc.protection_w(0xff5, sr, 0xffff);
             assert_eq!(
                 pvc.protection_r(0xff6),
                 pen,
@@ -344,12 +352,33 @@ mod tests {
         // 0x2300 -> (0x2300 & 0xfe00) | 0xa0 = 0x22a0, bank base
         // (0x2300 >> 8) + 0x100000. The following $FF9 write then sees the
         // stamped low register: bankaddress = (0x22a0 >> 8) | (0x0045 << 8).
-        let first = pvc.protection_w(0xff8, 0x2300);
+        let first = pvc.protection_w(0xff8, 0x2300, 0xffff);
         assert_eq!(first, Some(0x0023 + 0x100000));
-        let base = pvc.protection_w(0xff9, 0x0045);
+        let base = pvc.protection_w(0xff9, 0x0045, 0xffff);
         assert_eq!(base, Some(0x4522 + 0x100000));
         assert_eq!(pvc.protection_r(0xff8), 0x22a0);
         assert_eq!(pvc.protection_r(0xff9) & 0x8000, 0);
+    }
+
+    /// kof2003's bank routine at $14520 writes the LOW byte of the bank
+    /// address with `move.b` to $2FFFF0 (high lane of word reg $FF8), then
+    /// verifies it reads back, then writes the high word to $2FFFF2 ($FF9).
+    /// COMBINE_DATA semantics must preserve the other lane.
+    #[test]
+    fn pvc_bankswitch_byte_lane_writes() {
+        let mut pvc = PvcProt::new(PvcGame::Kof2003);
+        // Game computes d0 = $1D99A8 & $7FFFFE = $1D99A8.
+        // move.b d0,$2FFFF0 -> byte $A8 into the HIGH lane of $FF8.
+        pvc.protection_w(0xff8, 0xA800, 0xFF00);
+        // Readback check: high byte must be $A8 (game loops until it is).
+        assert_eq!(pvc.protection_r(0xff8) & 0xFF00, 0xA800);
+        // move.w d0>>8,$2FFFF2 -> word $1D99 into $FF9; triggers switch.
+        let base = pvc.protection_w(0xff9, 0x1D99, 0xFFFF);
+        // bankaddress = (ram[$FF8]>>8) | (ram[$FF9]<<8)
+        // ram[$FF8] high byte = $A8 (marker had stamped low bits only).
+        let got = base.expect("write at $FF9 must trigger bankswitch");
+        assert_eq!(got & 0xFF, 0xA8, "low 8 bits of bank base come from the byte write");
+        assert_eq!(got, (0xA8 | (0x1D99 << 8)) + 0x100000);
     }
 
     /// The descramble must be deterministic and actually permute/alter data.

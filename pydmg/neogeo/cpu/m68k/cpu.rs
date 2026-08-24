@@ -225,6 +225,10 @@ pub struct Cpu {
     /// solely to build the address-error stack frame. Updated alongside
     /// `self.pc` on every fetch and (approximately) at major bus accesses.
     pub au: u32,
+    /// Debug aid: ring buffer of recent instruction PCs (only records
+    /// control-flow discontinuities to stay cheap), dumped on wild jumps.
+    pub pc_history: [u32; 128],
+    pub pc_history_idx: usize,
 }
 
 impl Cpu {
@@ -244,6 +248,8 @@ impl Cpu {
             address_error: None,
             no_trace: false,
             au: 0,
+            pc_history: [0; 128],
+            pc_history_idx: 0,
         }
     }
 
@@ -363,6 +369,14 @@ impl Cpu {
 
     /// Standard format-B (6-byte) frame: SR, PC.
     pub fn enter_exception<B: Bus>(&mut self, bus: &mut B, vector: Exception) {
+        // Debug aid: log non-interrupt exceptions (vector < 24), which on
+        // this hardware almost always indicate an emulation bug.
+        if (vector as u8) < 24 {
+            log::debug!(
+                "EXC {:?} at PC=${:08X} (instr_pc=${:08X} ir=${:04X})",
+                vector, self.pc, self.instr_pc, self.ir
+            );
+        }
         let was_supervisor = self.sr.supervisor();
         if was_supervisor {
             self.ssp = self.a[7];
@@ -550,6 +564,40 @@ impl Cpu {
         self.ir = opcode;
         let used = crate::cpu::m68k::exec::execute(self, bus, opcode);
         self.cycles = self.cycles.wrapping_add(u64::from(used));
+
+        // Debug aid: record call-level control flow (jsr/jmp/rts/rte/rtr)
+        // in a small ring buffer. Loop branches (dbra/bcc) are skipped so
+        // tight loops don't erase the call history.
+        let is_call_flow = (self.ir & 0xFF80) == 0x4E80 // jsr/jmp
+            || self.ir == 0x4E75 // rts
+            || self.ir == 0x4E73 // rte
+            || self.ir == 0x4E77; // rtr
+        // Skip pure BIOS→BIOS flow so interrupt handler chains don't
+        // erase the cart-side call history.
+        if is_call_flow && (self.instr_pc < 0xC0_0000 || self.pc < 0xC0_0000) {
+            let i = self.pc_history_idx & 127;
+            self.pc_history[i] = self.instr_pc;
+            self.pc_history[(i + 1) & 127] = self.pc | 0x8000_0000; // mark targets
+            self.pc_history_idx = (i + 2) & 127;
+        }
+        // A jump into the vector table (< $80) is almost always a wild
+        // pointer — log the source instruction and recent flow.
+        if self.pc < 0x80 && self.instr_pc >= 0x80 {
+            let mut flow = String::new();
+            for k in 0..128 {
+                let v = self.pc_history[(self.pc_history_idx + k) & 127];
+                if v & 0x8000_0000 != 0 {
+                    flow.push_str(&format!("->{:06X} ", v & 0x00FF_FFFF));
+                } else {
+                    flow.push_str(&format!("{:06X}", v));
+                }
+            }
+            log::debug!(
+                "WILD JUMP to ${:08X} from instr at ${:08X} (ir=${:04X}) \
+                 D0=${:08X} A0=${:08X} A7=${:08X} flow: {}",
+                self.pc, self.instr_pc, self.ir, self.d[0], self.a[0], self.a[7], flow
+            );
+        }
 
         // Late-detected PC misalignment. With jump_to() in place this
         // should now be unreachable, but keep it as a safety net for any

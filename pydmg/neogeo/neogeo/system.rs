@@ -73,18 +73,22 @@ const M68K_CYCLES_PER_AUDIO_SAMPLE: u64 = 12_000_000 / YM_OUTPUT_HZ;
 /// `cartslot_fixed("cmc50_kof2000n")` etc.
 fn detect_fix_bank_type(name: &str) -> crate::graphics::video::FixBankType {
     let n = name.to_ascii_lowercase();
-    // FIX_BANKTYPE_GAROU: Garou + Metal Slug 3/4 family.
+    // FIX_BANKTYPE_GAROU (`get_fixed_bank_type() == 1`): Garou +
+    // Metal Slug 3/4 family + mslug5 (MAME `neogeo_pvc_mslug5_cart_device`).
     const GAROU_FAMILY: &[&str] = &[
         "garou", "garouh", "garoubl",
         "mslug3", "mslug3a", "mslug3h", "mslug3b6",
         "mslug4", "mslug4h", "ms4plus",
+        "mslug5", "mslug5h",
     ];
     if GAROU_FAMILY.iter().any(|g| n == *g) {
         return crate::graphics::video::FixBankType::Garou;
     }
-    // FIX_BANKTYPE_KOF2000: KOF2000 and its bootlegs.
+    // FIX_BANKTYPE_KOF2000 (`get_fixed_bank_type() == 2`): KOF2000 plus the
+    // PVC carts svc/kof2003/kof2003h (see MAME `bus/neogeo/pvc.h`).
     const KOF2K_FAMILY: &[&str] = &[
         "kof2000", "kof2000n",
+        "svc", "kof2003", "kof2003h",
     ];
     if KOF2K_FAMILY.iter().any(|g| n == *g) {
         return crate::graphics::video::FixBankType::Kof2000;
@@ -316,6 +320,22 @@ impl System {
             log::info!("protection device active: {:?}", std::mem::discriminant(&prot));
         }
         self.bus.prot = prot;
+        // Debug aid: dump the fully decrypted P region for offline
+        // disassembly when NEOGEO_DUMP_PROM is set to a path.
+        if let Ok(path) = std::env::var("NEOGEO_DUMP_PROM") {
+            if !path.is_empty() {
+                // Undo the CPU-side pairwise swap so the file matches
+                // MAME's raw region byte order (big-endian words).
+                let mut out = self.bus.p_rom.clone();
+                for chunk in out.chunks_exact_mut(2) {
+                    chunk.swap(0, 1);
+                }
+                match std::fs::write(&path, &out) {
+                    Ok(()) => log::info!("dumped decrypted P region ({:#x} bytes) to {path}", out.len()),
+                    Err(e) => log::warn!("P region dump to {path} failed: {e}"),
+                }
+            }
+        }
         // Stash fix-tile S-ROM and sprite C-ROMs for the video renderer.
         self.s_rom = romset.cart.s_rom;
         self.bios_sfix = romset.bios_sfix;
@@ -594,6 +614,21 @@ impl System {
         }
         if pre_pc == 0x0000012E {
             log::info!("DEMO_END @$012E inst={}", self.instructions);
+        }
+        // DEBUG(kof2003): scanline-table builder at $14634 zero-fills with counts
+        // derived from these work-RAM vars; a negative count makes the dbra loop
+        // wipe 64K words across the stack. Dump the inputs at the fill loops.
+        if pre_pc == 0x000149A4 || pre_pc == 0x000149C0 || pre_pc == 0x000149E0 {
+            log::debug!(
+                "KOF2K3TBL @${:06X} inst={} $107E12=${:04X} $107E16=${:04X} $107E18=${:08X} $107E1C=${:08X} $107E20=${:08X} $1087DE=${:04X} $1087E0=${:04X} $1087E2=${:04X} A2=${:08X} A7=${:08X}",
+                pre_pc, self.instructions,
+                self.bus.read16(0x107E12), self.bus.read16(0x107E16),
+                self.bus.read32(0x107E18), self.bus.read32(0x107E1C),
+                self.bus.read32(0x107E20),
+                self.bus.read16(0x1087DE), self.bus.read16(0x1087E0),
+                self.bus.read16(0x1087E2),
+                self.m68k.a[2], self.m68k.a[7],
+            );
         }
         // DEBUG: track BIOS SYSTEM_IO entry (coin/start poll). MAME doc:
         // SYSTEM_IO lives at $C0044A and reads coin+start inputs each VBlank.
