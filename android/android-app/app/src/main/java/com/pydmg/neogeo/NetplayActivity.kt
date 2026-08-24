@@ -13,6 +13,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.pydmg.neogeo.net.GameMismatchException
 import com.pydmg.neogeo.net.LanDiscovery
 import com.pydmg.neogeo.net.NetplaySession
 import com.pydmg.neogeo.net.Protocol
@@ -23,15 +24,20 @@ import java.net.NetworkInterface
  *
  * Two roles the user can pick:
  *
- *   * **Crear partida** (Host): the app binds the TCP port, advertises
- *     itself via NSD/mDNS, and waits for the peer to connect. Once
- *     it does, we finish() into [EmulatorActivity] with the session
- *     handle stored on [PydmgApp].
+ *   * **Crear sala** (Host): the app binds the TCP port, advertises
+ *     itself via NSD/mDNS *including the game name as a TXT record*,
+ *     and waits for the peer to connect. Once it does, we finish()
+ *     into [EmulatorActivity] with the session handle stored on
+ *     [PydmgApp].
  *
- *   * **Unirse a partida** (Client): scans mDNS for hosts; a tap on
+ *   * **Unirse a sala** (Client): scans mDNS for rooms and shows
+ *     ONLY the ones running the *same game* we just loaded (the TXT
+ *     `game` attribute must match [Prefs.lastCartName]); a tap on
  *     one connects. There's also an "IP manual" button for networks
  *     where mDNS is blocked (some enterprise WiFi, guest networks
- *     with client isolation, etc.).
+ *     with client isolation, etc.) — even then, the host re-checks
+ *     the game name during the TCP handshake and rejects mismatches,
+ *     so filtering isn't just cosmetic.
  *
  * This activity is launched *after* the user has picked a ROM from
  * LibraryActivity — [PydmgApp.pendingCart] holds the ROM already.
@@ -56,6 +62,10 @@ class NetplayActivity : AppCompatActivity() {
 
     private var pendingThread: Thread? = null
 
+    /** El juego que este dispositivo acaba de cargar — las salas se
+     *  filtran/crean con este nombre de set. */
+    private val myGame: String get() = PydmgApp.prefs.lastCartName
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -71,7 +81,7 @@ class NetplayActivity : AppCompatActivity() {
             textSize = 24f
         }
         status = TextView(this).apply {
-            text = getString(R.string.netplay_pick_a_role)
+            text = getString(R.string.netplay_pick_a_role_game, myGame)
             setPadding(0, 32, 0, 16)
         }
         progress = ProgressBar(this).apply { visibility = View.GONE }
@@ -139,6 +149,11 @@ class NetplayActivity : AppCompatActivity() {
         d.onPeerFound = { peer ->
             runOnUiThread {
                 if (peer != null) {
+                    // Solo salas del MISMO juego. Las salas de hosts con
+                    // versiones antiguas (sin TXT `game`) tampoco se
+                    // muestran: no podemos garantizar que coincidan y el
+                    // handshake las rechazaría igualmente.
+                    if (peer.gameName != myGame) return@runOnUiThread
                     // Avoid dupes when the mDNS TTL refreshes.
                     val present = (0 until peerAdapter.count).any {
                         peerAdapter.getItem(it)?.serviceName == peer.serviceName
@@ -164,14 +179,16 @@ class NetplayActivity : AppCompatActivity() {
 
         val serviceName = "pydmg-${android.os.Build.MODEL.take(16).replace(' ', '_')}"
         val localIps = collectLocalIps().joinToString(" / ")
-        status.text = getString(R.string.netplay_hosting_wait, localIps,
+        status.text = getString(R.string.netplay_hosting_wait_game, myGame, localIps,
             Protocol.DEFAULT_TCP_PORT)
 
-        discovery?.registerHost(serviceName, Protocol.DEFAULT_TCP_PORT)
+        // El nombre del juego viaja en el TXT record: los clientes solo
+        // verán esta sala si cargaron el mismo set.
+        discovery?.registerHost(serviceName, Protocol.DEFAULT_TCP_PORT, myGame)
 
         pendingThread = Thread {
             try {
-                val session = NetplaySession.acceptAsHost(inputDelay = 2)
+                val session = NetplaySession.acceptAsHost(gameName = myGame)
                 PydmgApp.app.netSession = session
                 runOnUiThread {
                     Toast.makeText(this, R.string.netplay_ready, Toast.LENGTH_SHORT).show()
@@ -203,7 +220,7 @@ class NetplayActivity : AppCompatActivity() {
 
         pendingThread = Thread {
             try {
-                val session = NetplaySession.connectAsClient(ipOrHost)
+                val session = NetplaySession.connectAsClient(ipOrHost, gameName = myGame)
                 PydmgApp.app.netSession = session
                 runOnUiThread {
                     Toast.makeText(this, R.string.netplay_ready, Toast.LENGTH_SHORT).show()
@@ -213,7 +230,10 @@ class NetplayActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.w(TAG, "client connect failed", t)
                 runOnUiThread {
-                    status.text = getString(R.string.netplay_error, t.message ?: "?")
+                    status.text = if (t is GameMismatchException)
+                        getString(R.string.netplay_game_mismatch, myGame)
+                    else
+                        getString(R.string.netplay_error, t.message ?: "?")
                     progress.visibility = View.GONE
                     btnHost.isEnabled = true
                     listPeers.isEnabled = true
