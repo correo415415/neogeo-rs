@@ -36,7 +36,7 @@ fn bits(x: u32, n: u32, w: u32) -> u32 {
 /// MAME `bitswap<N>(val, bN-1, .., b0)`: first listed source bit becomes the
 /// result MSB. Generic over the number of bits via the slice length.
 #[inline]
-fn bitswap(val: u32, srcs: &[u32]) -> u32 {
+pub fn bitswap(val: u32, srcs: &[u32]) -> u32 {
     let n = srcs.len();
     let mut r = 0u32;
     for (i, &b) in srcs.iter().enumerate() {
