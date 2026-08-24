@@ -204,7 +204,7 @@
         android:visibility="gone">
 
         <LinearLayout
-            android:layout_width="280dp"
+            android:layout_width="300dp"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:orientation="vertical"
@@ -212,41 +212,69 @@
             android:padding="22dp">
 
             <TextView
+                android:id="@+id/pause_game_title"
                 style="@style/Text.Title"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="@string/hud_pause" />
+
+            <TextView
+                android:id="@+id/pause_game_subtitle"
+                style="@style/Text.Caption"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="@color/brand_amber"
                 android:text="@string/hud_pause" />
 
             <Button
                 android:id="@+id/btn_resume"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
+                android:layout_height="50dp"
                 android:layout_marginTop="18dp"
                 android:background="@drawable/btn_primary"
                 android:textColor="@color/bg_root"
                 android:textAllCaps="false"
                 android:textStyle="bold"
-                android:text="Continuar" />
+                android:text="@string/pause_resume" />
 
-            <Button
-                android:id="@+id/btn_save_state"
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
+                android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:background="@drawable/btn_secondary"
-                android:textColor="@color/fg_primary"
-                android:textAllCaps="false"
-                android:text="@string/pause_save_state" />
+                android:orientation="horizontal">
 
-            <Button
-                android:id="@+id/btn_load_state"
+                <Button
+                    android:id="@+id/btn_save_state"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_secondary"
+                    android:textColor="@color/fg_primary"
+                    android:textAllCaps="false"
+                    android:text="@string/pause_save_state" />
+
+                <Button
+                    android:id="@+id/btn_load_state"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/btn_secondary"
+                    android:textColor="@color/fg_primary"
+                    android:textAllCaps="false"
+                    android:text="@string/pause_load_state" />
+            </LinearLayout>
+
+            <View
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/btn_secondary"
-                android:textColor="@color/fg_primary"
-                android:textAllCaps="false"
-                android:text="@string/pause_load_state" />
+                android:layout_height="1dp"
+                android:layout_marginTop="14dp"
+                android:layout_marginBottom="4dp"
+                android:background="@color/divider" />
 
             <Button
                 android:id="@+id/btn_back_to_library"
@@ -254,7 +282,7 @@
                 android:layout_height="48dp"
                 android:layout_marginTop="10dp"
                 android:background="@drawable/btn_secondary"
-                android:textColor="@color/fg_primary"
+                android:textColor="@color/brand_red"
                 android:textAllCaps="false"
                 android:text="@string/hud_back_to_library" />
         </LinearLayout>

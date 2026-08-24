@@ -55,6 +55,7 @@
     <string name="hud_select">SELECT</string>
     <string name="hud_start">START</string>
     <string name="hud_back_to_library">Salir al menú</string>
+    <string name="pause_resume">Continuar</string>
 
     <!-- Buttons -->
     <string name="btn_a">A</string>
