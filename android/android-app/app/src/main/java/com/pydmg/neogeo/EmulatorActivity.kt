@@ -423,17 +423,51 @@ class EmulatorActivity : AppCompatActivity() {
                                 net.compareOrQueueLocalKeyframe(f, crc)
                             }
                         }
-                        // If a desync was reported, surface it and
-                        // stay paused until the user backs out.
-                        net.desync.get()?.let { d ->
+                        // Un desync ahora se auto-recupera: el cliente
+                        // pide un savestate al host y ambos siguen.
+                        // Solo avisamos con un toast informativo.
+                        net.desync.getAndSet(null)?.let { d ->
                             runOnUiThread {
                                 android.widget.Toast.makeText(
                                     this@EmulatorActivity,
-                                    getString(R.string.netplay_desync, d.frame),
-                                    android.widget.Toast.LENGTH_LONG
+                                    getString(R.string.netplay_resync),
+                                    android.widget.Toast.LENGTH_SHORT
                                 ).show()
-                                pauseOverlay.visibility = View.VISIBLE
                             }
+                            android.util.Log.w(TAG,
+                                "desync @f=${d.frame} local=${d.localCrc} remote=${d.remoteCrc} — resyncing")
+                        }
+                    }
+                }
+                // ---- Resincronización por savestate (fuera del paso de
+                // frame: puede ocurrir mientras la sesión está pausada) ----
+                if (net != null) {
+                    // HOST: el cliente pidió un snapshot → capturar el
+                    // estado NGSS entre frames y enviarlo por TCP.
+                    if (net.consumeSnapshotRequest()) {
+                        val snap = NativeBridge.nativeSaveState()
+                        if (snap != null && snap.isNotEmpty()) {
+                            net.sendStateSnapshot(snap)
+                        } else {
+                            android.util.Log.w(TAG, "snapshot capture failed during resync")
+                        }
+                    }
+                    // CLIENT: llegó el snapshot del host → cargarlo y
+                    // adoptar su contador de frames.
+                    net.consumePendingRemoteState()?.let { rs ->
+                        val ok = NativeBridge.nativeLoadState(rs.state)
+                        if (ok) {
+                            net.completeResync(rs.frame)
+                            nextDeadline = System.nanoTime() + framePeriodNs
+                            runOnUiThread {
+                                android.widget.Toast.makeText(
+                                    this@EmulatorActivity,
+                                    R.string.netplay_resync_done,
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        } else {
+                            android.util.Log.w(TAG, "state load failed during resync")
                         }
                     }
                 }
