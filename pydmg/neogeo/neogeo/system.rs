@@ -463,9 +463,10 @@ impl System {
     /// current at that moment — this is what makes IRQ2-driven raster
     /// effects (per-line sprite X shifts → water ripple, floor warp) work.
     ///
-    /// Visible hardware lines are 0x10..=0xEF, mapping to output rows
-    /// 0..223. We render a line when the LSPC counter *advances onto* it,
-    /// i.e. with the state the 68k prepared during the preceding line.
+    /// In the LSPC timing domain (lspc.rs), scanlines 0..=223 are the
+    /// visible area and vblank starts at 224; output row == timing line.
+    /// We render a line when the LSPC counter *advances onto* it, i.e.
+    /// with the state the 68k prepared during the preceding line.
     fn raster_render_crossed_lines(&mut self) {
         let cur = self.bus.lspc.scanline;
         let prev = self.raster_prev_scanline;
@@ -487,19 +488,27 @@ impl System {
             None
         };
         for i in 1..=delta {
-            let hw_line = (u32::from(prev) + i) % 264;
+            let line = (u32::from(prev) + i) % 264;
             // VBLANK start: all 224 visible lines of this frame are now in
             // `raster_frame` — latch a coherent copy for presentation.
-            if hw_line == 224
+            if line == 224
                 && self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64
             {
                 self.raster_presented.copy_from_slice(&self.raster_frame);
                 self.raster_snapshots = self.raster_snapshots.wrapping_add(1);
             }
-            if !(0x10..0xF0).contains(&hw_line) {
+            // TIMING domain: lspc.rs counts scanline 0..223 as the visible
+            // area (vblank_pending fires at 224). The +0x10 sprite-Y bias
+            // belongs to the sprite COORDINATE domain and is applied inside
+            // render_sprite_scanline, NOT here. Mapping timing lines
+            // 0x10..0xEF to output rows (previous code) rendered everything
+            // 16 lines late: the last 16 visible rows were drawn after the
+            // game's vblank handler had already rewritten VRAM for the next
+            // frame -> corrupted 16-line band at the bottom of the screen.
+            if line >= 224 {
                 continue;
             }
-            let out_line = (hw_line - 0x10) as usize;
+            let out_line = line as usize;
             crate::graphics::video::render_scanline(
                 &self.bus.lspc,
                 self.bus.palette_ram.as_ref(),
