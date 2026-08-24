@@ -4,3 +4,6 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+# Custom views inflated from XML layouts by name.
+-keep class com.pydmg.neogeo.EmulatorView { <init>(...); }
+-keep class com.pydmg.neogeo.JoystickView { <init>(...); }
