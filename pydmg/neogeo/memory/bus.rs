@@ -216,6 +216,14 @@ impl NeoGeoBus {
                     }
                 }
             }
+            // PVC: 8KiB cart RAM at $2FE000-$2FFFFF.
+            CartProt::Pvc(p) => {
+                if (0x2FE000..=0x2FFFFF).contains(&a) {
+                    Some(p.protection_r(((a - 0x2FE000) >> 1) as usize))
+                } else {
+                    None
+                }
+            }
         };
         self.prot = prot;
         result
@@ -241,6 +249,7 @@ impl NeoGeoBus {
                 };
                 a == bank_reg || a == bank_reg + 1
             }
+            CartProt::Pvc(_) => (0x2FE000..=0x2FFFFF).contains(&a),
         };
         if !claimed {
             return false;
@@ -263,6 +272,13 @@ impl NeoGeoBus {
                 log::trace!(
                     "SMA bankswitch: sel={word:04X} -> P offset ${base:08X}"
                 );
+            }
+            CartProt::Pvc(p) => {
+                let offset = ((word_addr - 0x2FE000) >> 1) as usize;
+                if let Some(base) = p.protection_w(offset, word) {
+                    self.p_rom_bank_offset = base;
+                    log::trace!("PVC bankswitch -> P offset ${base:08X}");
+                }
             }
             CartProt::None => unreachable!(),
         }

@@ -35,9 +35,16 @@ pub enum PvcGame {
 }
 
 /// PVC protection chip state: 0x1000 u16 of cart RAM at $2FE000-$2FFFFF.
+#[derive(Clone)]
 pub struct PvcProt {
     pub game: PvcGame,
     cart_ram: [u16; 0x1000],
+}
+
+impl std::fmt::Debug for PvcProt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PvcProt").field("game", &self.game).finish()
+    }
 }
 
 impl PvcProt {
