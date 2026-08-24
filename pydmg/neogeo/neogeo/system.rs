@@ -615,6 +615,21 @@ impl System {
         if pre_pc == 0x0000012E {
             log::info!("DEMO_END @$012E inst={}", self.instructions);
         }
+        // DEBUG(kof2003): scanline-table builder at $14634 zero-fills with counts
+        // derived from these work-RAM vars; a negative count makes the dbra loop
+        // wipe 64K words across the stack. Dump the inputs at the fill loops.
+        if pre_pc == 0x000149A4 || pre_pc == 0x000149C0 || pre_pc == 0x000149E0 {
+            log::debug!(
+                "KOF2K3TBL @${:06X} inst={} $107E12=${:04X} $107E16=${:04X} $107E18=${:08X} $107E1C=${:08X} $107E20=${:08X} $1087DE=${:04X} $1087E0=${:04X} $1087E2=${:04X} A2=${:08X} A7=${:08X}",
+                pre_pc, self.instructions,
+                self.bus.read16(0x107E12), self.bus.read16(0x107E16),
+                self.bus.read32(0x107E18), self.bus.read32(0x107E1C),
+                self.bus.read32(0x107E20),
+                self.bus.read16(0x1087DE), self.bus.read16(0x1087E0),
+                self.bus.read16(0x1087E2),
+                self.m68k.a[2], self.m68k.a[7],
+            );
+        }
         // DEBUG: track BIOS SYSTEM_IO entry (coin/start poll). MAME doc:
         // SYSTEM_IO lives at $C0044A and reads coin+start inputs each VBlank.
         if pre_pc == 0x00C0044A {
