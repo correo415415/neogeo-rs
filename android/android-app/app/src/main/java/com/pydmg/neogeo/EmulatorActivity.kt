@@ -32,12 +32,6 @@ class EmulatorActivity : AppCompatActivity() {
     private lateinit var p1Dpad: View
     private lateinit var p1Joystick: JoystickView
     private lateinit var p1Abcd: View
-    private lateinit var p2LeftControls: View
-    private lateinit var p2Dpad: View
-    private lateinit var p2Joystick: JoystickView
-    private lateinit var p2Abcd: View
-    private lateinit var btnCoinP2: View
-    private lateinit var btnStartP2: View
 
     private lateinit var pauseOverlay: View
 
@@ -207,12 +201,6 @@ class EmulatorActivity : AppCompatActivity() {
         p1Dpad = findViewById(R.id.dpad_container)
         p1Joystick = findViewById(R.id.joystick_p1)
         p1Abcd = findViewById(R.id.abcd_pad)
-        p2LeftControls = findViewById(R.id.p2_left_controls)
-        p2Dpad = findViewById(R.id.dpad_p2_container)
-        p2Joystick = findViewById(R.id.joystick_p2)
-        p2Abcd = findViewById(R.id.p2_abcd_pad)
-        btnCoinP2 = findViewById(R.id.btn_coin_p2)
-        btnStartP2 = findViewById(R.id.btn_start_p2)
         pauseOverlay = findViewById(R.id.pause_overlay)
     }
 
@@ -232,8 +220,6 @@ class EmulatorActivity : AppCompatActivity() {
         bindTouch(R.id.btn_coin_p1,   1, NativeBridge.BTN_COIN)
         bindTouch(R.id.btn_select_p1, 1, NativeBridge.BTN_SELECT)
         bindTouch(R.id.btn_start_p1,  1, NativeBridge.BTN_START)
-        bindTouch(R.id.btn_coin_p2,   2, NativeBridge.BTN_COIN)
-        bindTouch(R.id.btn_start_p2,  2, NativeBridge.BTN_START)
     }
 
     private fun wireControls() {
@@ -247,49 +233,30 @@ class EmulatorActivity : AppCompatActivity() {
         bindTouch(R.id.btn_b, 1, NativeBridge.BTN_B)
         bindTouch(R.id.btn_c, 1, NativeBridge.BTN_C)
         bindTouch(R.id.btn_d, 1, NativeBridge.BTN_D)
-        // P2 compact
-        bindTouch(R.id.dpad2_up,    2, NativeBridge.BTN_UP)
-        bindTouch(R.id.dpad2_down,  2, NativeBridge.BTN_DOWN)
-        bindTouch(R.id.dpad2_left,  2, NativeBridge.BTN_LEFT)
-        bindTouch(R.id.dpad2_right, 2, NativeBridge.BTN_RIGHT)
-        bindTouch(R.id.btn2_a, 2, NativeBridge.BTN_A)
-        bindTouch(R.id.btn2_b, 2, NativeBridge.BTN_B)
-        bindTouch(R.id.btn2_c, 2, NativeBridge.BTN_C)
-        bindTouch(R.id.btn2_d, 2, NativeBridge.BTN_D)
 
         p1Joystick.onDirectionMaskChanged = { setDirectionalMask(1, it) }
-        p2Joystick.onDirectionMaskChanged = { setDirectionalMask(2, it) }
     }
 
     // ---------- Preferences ----------
 
     private fun applyControlPreferences() {
         val useJoystick = PydmgApp.prefs.useJoystick
-        val mp = PydmgApp.prefs.localMultiplayer
         val alpha = PydmgApp.prefs.controlOpacity
         val scale = PydmgApp.prefs.controlScale
 
-        listOf(p1LeftControls, p1Abcd, p2LeftControls, p2Abcd, findViewById(R.id.top_hud_bar)).forEach {
+        listOf(p1LeftControls, p1Abcd, findViewById(R.id.top_hud_bar)).forEach {
             it.alpha = alpha
         }
-        listOf(p1LeftControls, p1Abcd, p2LeftControls, p2Abcd).forEach {
+        listOf(p1LeftControls, p1Abcd).forEach {
             it.scaleX = scale; it.scaleY = scale
         }
 
         p1Dpad.visibility = if (useJoystick) View.GONE else View.VISIBLE
         p1Joystick.visibility = if (useJoystick) View.VISIBLE else View.GONE
-        p2Dpad.visibility = if (useJoystick) View.GONE else View.VISIBLE
-        p2Joystick.visibility = if (useJoystick) View.VISIBLE else View.GONE
-
-        val v2 = if (mp) View.VISIBLE else View.GONE
-        p2LeftControls.visibility = v2
-        p2Abcd.visibility = v2
-        btnCoinP2.visibility = v2
-        btnStartP2.visibility = v2
 
         // Clear stale directional inputs whenever the control mode flips.
         setDirectionalMask(1, 0)
-        if (!mp) p2Mask.set(0) else setDirectionalMask(2, 0)
+        p2Mask.set(0)
 
         // Bilinear filtering toggle goes here when EmulatorView supports it.
         emulatorView.smoothFilter = PydmgApp.prefs.smoothFilter

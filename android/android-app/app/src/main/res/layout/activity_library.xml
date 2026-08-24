@@ -221,21 +221,6 @@
                         android:background="@color/divider" />
 
                     <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/sw_local_mp"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/settings_local_multiplayer"
-                        android:textColor="@color/fg_primary"
-                        android:minHeight="48dp" />
-
-                    <View
-                        android:layout_width="match_parent"
-                        android:layout_height="1dp"
-                        android:layout_marginTop="4dp"
-                        android:layout_marginBottom="4dp"
-                        android:background="@color/divider" />
-
-                    <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/sw_haptics"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"

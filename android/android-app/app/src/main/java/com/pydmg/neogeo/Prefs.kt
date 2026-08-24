@@ -35,19 +35,6 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean(KEY_USE_JOYSTICK, false)
         set(v) { sp.edit().putBoolean(KEY_USE_JOYSTICK, v).apply() }
 
-    var localMultiplayer: Boolean
-        get() = sp.getBoolean(KEY_LOCAL_MP, false)
-        set(v) { sp.edit().putBoolean(KEY_LOCAL_MP, v).apply() }
-
-    /**
-     * LAN netplay (host / join over Wi-Fi). Mutually exclusive with
-     * [localMultiplayer] — the settings screen enforces that only
-     * one is on at a time.
-     */
-    var lanMultiplayer: Boolean
-        get() = sp.getBoolean(KEY_LAN_MP, false)
-        set(v) { sp.edit().putBoolean(KEY_LAN_MP, v).apply() }
-
     var controlOpacity: Float
         get() = sp.getFloat(KEY_OPACITY, 0.7f)
         set(v) { sp.edit().putFloat(KEY_OPACITY, v).apply() }
@@ -77,8 +64,6 @@ class Prefs(ctx: Context) {
         private const val KEY_ROM_FOLDER_URI = "rom_folder_uri"
         private const val KEY_LAST_CART      = "last_cart_name"
         private const val KEY_USE_JOYSTICK   = "use_joystick"
-        private const val KEY_LOCAL_MP       = "local_multiplayer"
-        private const val KEY_LAN_MP         = "lan_multiplayer"
         private const val KEY_OPACITY        = "control_opacity"
         private const val KEY_SCALE          = "control_scale"
         private const val KEY_HAPTICS        = "control_haptics"
