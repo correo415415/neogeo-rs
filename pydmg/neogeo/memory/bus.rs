@@ -115,11 +115,6 @@ pub struct NeoGeoBus {
     /// Active cartridge protection device (MAME `set_slot_idx` cart-type
     /// switch). `CartProt::None` for unprotected carts.
     pub prot: CartProt,
-    /// High-byte latch for 16-bit protection register writes. The 68000
-    /// core splits word writes into two byte writes (even=high, odd=low);
-    /// protection devices are 16-bit, so we latch the even byte and
-    /// dispatch the full word when the odd byte arrives.
-    prot_w_latch: u8,
 }
 
 /// MAME `WATCHDOG_TIMER(...).set_time(attotime::from_ticks(3244030, NEOGEO_MASTER_CLOCK))`.
@@ -159,7 +154,6 @@ impl NeoGeoBus {
             watchdog_cycles: WATCHDOG_TIMEOUT_68K,
             watchdog_expired: false,
             prot: CartProt::None,
-            prot_w_latch: 0,
         }
     }
 
@@ -229,17 +223,24 @@ impl NeoGeoBus {
         result
     }
 
-    /// Protection-device writes over $200000-$2FFFFF. Returns `true` when
-    /// a device consumed the byte (even bytes are latched, odd bytes
-    /// dispatch the assembled word). Mirrors MAME `set_slot_idx` write
-    /// handlers + `write_bankprot`.
-    fn prot_write8(&mut self, a: u32, value: u8) -> bool {
+    /// Protection-device writes over $200000-$2FFFFF, 16-bit with byte-lane
+    /// mask (MAME `COMBINE_DATA` semantics). `word_addr` must be even.
+    /// Returns `true` when a device consumed the access. Mirrors MAME
+    /// `set_slot_idx` write handlers + `write_bankprot`.
+    ///
+    /// A word write passes `mem_mask = 0xFFFF`. A byte write passes the
+    /// value replicated in its lane with mask `0xFF00` (even address) or
+    /// `0x00FF` (odd). This is critical for PVC: kof2003's bank routine at
+    /// $14520 does `move.b d0,$2FFFF0.l` — a lone BYTE write to the high
+    /// lane of the bank register. A latch scheme that waits for the odd
+    /// byte drops it and the game bankswitches to the wrong base.
+    fn prot_write16(&mut self, word_addr: u32, data: u16, mem_mask: u16) -> bool {
         // Which word addresses does the current device claim?
         let claimed = match &self.prot {
             CartProt::None => false,
             CartProt::FatFury2(_) => true, // whole window
-            CartProt::Kof98(_) => (0x20AAAA..=0x20AAAB).contains(&a),
-            CartProt::MslugX(_) => (0x2FFFE0..=0x2FFFEF).contains(&a),
+            CartProt::Kof98(_) => word_addr == 0x20AAAA,
+            CartProt::MslugX(_) => (0x2FFFE0..=0x2FFFEF).contains(&word_addr),
             CartProt::Sma(p) => {
                 let bank_reg: u32 = match p.game {
                     SmaGame::Kof99 => 0x2FFFF0,
@@ -247,35 +248,28 @@ impl NeoGeoBus {
                     SmaGame::Mslug3 | SmaGame::Mslug3a => 0x2FFFE4,
                     SmaGame::Kof2000 => 0x2FFFEC,
                 };
-                a == bank_reg || a == bank_reg + 1
+                word_addr == bank_reg
             }
-            CartProt::Pvc(_) => (0x2FE000..=0x2FFFFF).contains(&a),
+            CartProt::Pvc(_) => (0x2FE000..=0x2FFFFF).contains(&word_addr),
         };
         if !claimed {
             return false;
         }
-        if a & 1 == 0 {
-            // Even byte = high lane: latch and wait for the low byte.
-            self.prot_w_latch = value;
-            return true;
-        }
-        let word = (u16::from(self.prot_w_latch) << 8) | u16::from(value);
-        let word_addr = a & !1;
         match &mut self.prot {
-            CartProt::FatFury2(p) => p.protection_w((word_addr - 0x200000) >> 1, word),
-            CartProt::Kof98(p) => p.protection_w(word),
-            CartProt::MslugX(p) => p.protection_w((word_addr - 0x2FFFE0) >> 1, word),
+            CartProt::FatFury2(p) => p.protection_w((word_addr - 0x200000) >> 1, data),
+            CartProt::Kof98(p) => p.protection_w(data),
+            CartProt::MslugX(p) => p.protection_w((word_addr - 0x2FFFE0) >> 1, data),
             CartProt::Sma(p) => {
                 // MAME `write_bankprot`: scrambled banksel.
-                let base = p.bank_base(word);
+                let base = p.bank_base(data);
                 self.p_rom_bank_offset = base;
                 log::trace!(
-                    "SMA bankswitch: sel={word:04X} -> P offset ${base:08X}"
+                    "SMA bankswitch: sel={data:04X} -> P offset ${base:08X}"
                 );
             }
             CartProt::Pvc(p) => {
                 let offset = ((word_addr - 0x2FE000) >> 1) as usize;
-                if let Some(base) = p.protection_w(offset, word) {
+                if let Some(base) = p.protection_w(offset, data, mem_mask) {
                     self.p_rom_bank_offset = base;
                     log::trace!("PVC bankswitch -> P offset ${base:08X}");
                 }
@@ -480,13 +474,16 @@ impl NeoGeoBus {
             }
             0x200000..=0x2FFFFF => {
                 // Protection devices first (MAME installs their write
-                // handlers over this window per cart type). 16-bit devices:
-                // collect both byte lanes via prot_write16 with the byte
-                // value replicated — the real 68000 writes here are word
-                // writes so both lanes arrive back-to-back; devices latch
-                // on each write which matches MAME's write16 semantics
-                // closely enough for these register-style devices.
-                if self.prot_write8(a, value) {
+                // handlers over this window per cart type). These are
+                // 16-bit devices; a byte access hits one lane, so pass
+                // COMBINE_DATA-style (data, mem_mask). Word writes come
+                // in through `write16` below and never reach this path.
+                let (data, mem_mask) = if a & 1 == 0 {
+                    (u16::from(value) << 8, 0xFF00)
+                } else {
+                    (u16::from(value), 0x00FF)
+                };
+                if self.prot_write16(a & !1, data, mem_mask) {
                     return;
                 }
                 // Standard cart bankswitch register. MAME maps the banksel
@@ -786,6 +783,15 @@ impl Bus for NeoGeoBus {
         let a = addr & 0x00FF_FFFF;
         if (0x3C0000..=0x3C00FE).contains(&a) {
             self.lspc.write_register_word(a as u16, value);
+        } else if (0x200000..=0x2FFFFF).contains(&a) {
+            // Protection devices are 16-bit and stateful: a word write
+            // must hit the device exactly ONCE (PVC stamps its bank
+            // marker on every access at >= $FF8 — splitting into two
+            // byte writes would double-trigger it).
+            if !self.prot_write16(a & !1, value, 0xFFFF) {
+                self.write_phys8(addr, (value >> 8) as u8);
+                self.write_phys8(addr.wrapping_add(1), value as u8);
+            }
         } else {
             self.write_phys8(addr, (value >> 8) as u8);
             self.write_phys8(addr.wrapping_add(1), value as u8);
