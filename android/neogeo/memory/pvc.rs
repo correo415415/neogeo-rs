@@ -409,3 +409,17 @@ mod tests {
         svc_px_decrypt(&mut rom);
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+impl crate::state::StateSer for PvcProt {
+    fn save(&self, out: &mut Vec<u8>) {
+        // `game` lo fija el cartucho; solo persiste la cart RAM.
+        self.cart_ram.save(out);
+    }
+    fn load(&mut self, r: &mut crate::state::StateReader<'_>) -> Result<(), crate::state::StateError> {
+        self.cart_ram.load(r)
+    }
+}

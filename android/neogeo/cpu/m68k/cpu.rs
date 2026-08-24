@@ -183,7 +183,7 @@ impl Exception {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AddressErrorInfo {
     pub access_addr: u32,
     /// True when the faulting access was a read.
@@ -657,3 +657,25 @@ impl Default for Cpu {
         Self::new()
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+impl crate::state::StateSer for StatusRegister {
+    fn save(&self, out: &mut Vec<u8>) {
+        self.0.save(out);
+    }
+    fn load(&mut self, r: &mut crate::state::StateReader<'_>) -> Result<(), crate::state::StateError> {
+        self.0.load(r)
+    }
+}
+
+crate::state::state_fields!(AddressErrorInfo {
+    access_addr, read, fc, instruction, from_stack_op,
+});
+
+crate::state::state_fields!(Cpu {
+    d, a, usp, ssp, pc, sr, stopped, pending_irq, cycles, instr_pc, ir,
+    address_error, no_trace, au, pc_history, pc_history_idx,
+});

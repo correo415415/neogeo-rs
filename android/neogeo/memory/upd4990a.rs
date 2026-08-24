@@ -339,3 +339,13 @@ impl Upd4990a {
         v
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+crate::state::state_fields!(Upd4990a {
+    seconds, minutes, hours, day, month, year, weekday, mode, tp_mode,
+    shift_reg, command, count, tp_count, tp_interval, data_out_count,
+    data_out_interval, data_out_pulse, tp, prev_clk, prev_stb,
+});

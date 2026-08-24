@@ -3253,3 +3253,52 @@ mod ssg_eg_tests {
         assert!(checked, "test never hit a decay step; adjust DR");
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+//
+// `adpcm_a_rom` / `adpcm_b_rom` son V-ROM (datos de cartucho) y quedan fuera
+// del savestate. Los contadores dbg_* tampoco se persisten: son diagnósticos
+// y no afectan a la emulación.
+
+crate::state::state_fields!(AdpcmAChan {
+    on, il, pan, start, end, addr_nib, cur_byte, acc, step, adpcm_out,
+    vol_mul, vol_shift,
+});
+
+crate::state::state_fields!(DeltaTChan {
+    on, volume, pan, delta, start, end, interpolate, now_step, addr_nib,
+    cur_byte, acc, prev_acc, adpcmd, looped, curnibble,
+});
+
+crate::state::state_fields!(Ssg {
+    tone_period, noise_period, mixer, vol, env_period, env_shape,
+    tone_count, tone_state, noise_count, noise_state, env_count, env_state,
+    tick_frac, dc_estimator_q16,
+});
+
+crate::state::state_fields!(FmOp {
+    mul, dt, tl, ar, dr, sr, rr, sl, ksr_shift, ksr, phase, volume, state,
+    eg_sh_ar, eg_sh_d1r, eg_sh_d2r, eg_sh_rr,
+    eg_sel_ar, eg_sel_d1r, eg_sel_d2r, eg_sel_rr,
+    am_enabled, key, ssg, ssgn,
+});
+
+crate::state::state_fields!(FmCh {
+    op, fnum_block, alg, fb, pan, ams, pms, op0_prev, mem_value,
+    fnum_latch_hi, active,
+});
+
+crate::state::state_fields!(FmOpn {
+    ch, ch2_multi_freq, ch2_multi_block_freq, eg_cnt, eg_timer,
+    lfo_enabled, lfo_rate, lfo_delay, lfo_pos, lfo_am, lfo_pm,
+});
+
+crate::state::state_fields!(Ym2610 {
+    regs_a, regs_b, addr_a, addr_b, status_a, busy_z80_cycles,
+    adpcm_a, adpcm_b, ssg, irq_out, irq_enable,
+    timer_a_period, timer_b_period, timer_a_enabled, timer_b_enabled,
+    timer_a_count, timer_b_count, adpcm_a_end_flags, adpcma_tl, fm,
+    adpcm_a_frac,
+});
