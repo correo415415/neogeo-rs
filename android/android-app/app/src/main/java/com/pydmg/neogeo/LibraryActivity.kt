@@ -51,6 +51,7 @@ class LibraryActivity : AppCompatActivity() {
     private lateinit var textFolderValue: TextView
 
     private lateinit var swJoystick: MaterialSwitch
+    private lateinit var swHaptics: MaterialSwitch
     private lateinit var swLocalMp: MaterialSwitch
     private lateinit var swCrop: MaterialSwitch
     private lateinit var swSmooth: MaterialSwitch
@@ -151,6 +152,7 @@ class LibraryActivity : AppCompatActivity() {
 
         swJoystick = findViewById(R.id.sw_use_joystick)
         swLocalMp = findViewById(R.id.sw_local_mp)
+        swHaptics = findViewById(R.id.sw_haptics)
         swCrop = findViewById(R.id.sw_crop)
         swSmooth = findViewById(R.id.sw_smooth)
         sliderOpacity = findViewById(R.id.slider_opacity)
@@ -202,6 +204,7 @@ class LibraryActivity : AppCompatActivity() {
         // Initial values
         swJoystick.isChecked = PydmgApp.prefs.useJoystick
         swLocalMp.isChecked = PydmgApp.prefs.localMultiplayer
+        swHaptics.isChecked = PydmgApp.prefs.hapticFeedback
         swCrop.isChecked = PydmgApp.prefs.cropScreen
         swSmooth.isChecked = PydmgApp.prefs.smoothFilter
         sliderOpacity.value = PydmgApp.prefs.controlOpacity.coerceIn(0.25f, 1.0f)
@@ -209,6 +212,7 @@ class LibraryActivity : AppCompatActivity() {
 
         swJoystick.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.useJoystick = c }
         swLocalMp.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.localMultiplayer = c }
+        swHaptics.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.hapticFeedback = c }
         swCrop.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.cropScreen = c }
         swSmooth.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.smoothFilter = c }
         sliderOpacity.addOnChangeListener { _, v, _ -> PydmgApp.prefs.controlOpacity = v }
