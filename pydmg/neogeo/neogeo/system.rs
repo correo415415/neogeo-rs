@@ -137,8 +137,13 @@ pub struct System {
     /// mid-frame VRAM rewrites (IRQ2 raster effects like the VAPOROUS demo
     /// water ripple) appear on exactly the lines they affect.
     raster_frame: Vec<u32>,
+    /// Next output row (0..=223) not yet rendered into `raster_frame`
+    /// for the current frame. Rows are rendered lazily, in batches, when
+    /// an event is about to change video state (IRQ2 raise) or the frame
+    /// ends (VBLANK start) — MAME's `update_partial` model.
+    raster_next_row: u16,
     /// LSPC scanline observed after the previous `lspc.tick` — used to
-    /// detect which lines were crossed by the current tick.
+    /// detect the VBLANK-start (line 224) crossing.
     raster_prev_scanline: u16,
     /// Total visible lines rendered into `raster_frame` since power-on.
     /// While < SCREEN_H the buffer is still partially cold and
@@ -184,6 +189,7 @@ impl System {
                 0u32;
                 crate::graphics::video::SCREEN_W * crate::graphics::video::SCREEN_H
             ],
+            raster_next_row: 0,
             raster_prev_scanline: 0,
             raster_lines_rendered: 0,
             raster_presented: vec![
@@ -457,28 +463,42 @@ impl System {
         )
     }
 
-    /// Render into the raster frame buffer every visible scanline the LSPC
-    /// crossed since the previous call. Called right after `lspc.tick` in
-    /// `step()` so each line is drawn with the VRAM/palette/latch state
-    /// current at that moment — this is what makes IRQ2-driven raster
-    /// effects (per-line sprite X shifts → water ripple, floor warp) work.
+    /// Lazily render all not-yet-rendered rows of the current frame up to
+    /// and including `up_to_row` (clamped to the visible area) with the
+    /// CURRENT VRAM/palette/latch state.
+    ///
+    /// This is MAME's `update_partial` model: instead of rendering each
+    /// row eagerly at a fixed line-boundary instant, rows accumulate and
+    /// are flushed right before a video-state-changing event:
+    ///
+    ///   * an IRQ2 (display position) raise — the raster handler is about
+    ///     to rewrite VRAM, so everything the beam has passed must be
+    ///     drawn with the *pre-handler* state first;
+    ///   * VBLANK start — the frame is complete; flush the tail and latch
+    ///     the presentation snapshot.
+    ///
+    /// Why not eager per-line rendering? It raced with IRQ2 handlers that
+    /// span a line boundary. VAPOROUS' cube scene fires an
+    /// AUTOLOAD_REPEAT IRQ2 on every line 10..=121; on most lines the
+    /// handler is taken mid-line and RTEs within the same line, but when
+    /// the take happened late (line 121: taken at cycle 688/768, RTE 392
+    /// cycles into the next line) the eager render of the next row caught
+    /// the 68k mid-handler, before its VRAM writes completed -> one black
+    /// line at the split point (row 122), absent on hardware. Deferring
+    /// each row by one line just moved the artifact one row up. With lazy
+    /// flushing the race is impossible by construction: rows are only
+    /// sampled at raise instants (pre-handler) or at VBLANK, and a
+    /// handler has until the *next* raise — a full line — to finish.
     ///
     /// In the LSPC timing domain (lspc.rs), scanlines 0..=223 are the
     /// visible area and vblank starts at 224; output row == timing line.
-    /// We render a line when the LSPC counter *advances onto* it, i.e.
-    /// with the state the 68k prepared during the preceding line.
-    fn raster_render_crossed_lines(&mut self) {
-        let cur = self.bus.lspc.scanline;
-        let prev = self.raster_prev_scanline;
-        if cur == prev {
+    /// The +0x10 sprite-Y bias belongs to the sprite COORDINATE domain
+    /// and is applied inside render_sprite_scanline, NOT here (see PR#11).
+    fn raster_catch_up(&mut self, up_to_row: u16) {
+        let end = up_to_row.min(223);
+        if self.raster_next_row > end {
             return;
         }
-        self.raster_prev_scanline = cur;
-        // Lines crossed this tick (LSPC wraps at 264).
-        let delta = (u32::from(cur) + 264 - u32::from(prev)) % 264;
-        // Latch systemlatch-derived render state once per burst; a tick
-        // rarely crosses more than one line, so this matches per-line
-        // latching in practice.
         let palette_bank = (self.bus.systemlatch >> 7) & 1;
         let screen_shadow = (self.bus.systemlatch & 0x01) != 0;
         let use_cart_fix = (self.bus.systemlatch & 0x20) != 0; // Q5
@@ -487,28 +507,7 @@ impl System {
         } else {
             None
         };
-        for i in 1..=delta {
-            let line = (u32::from(prev) + i) % 264;
-            // VBLANK start: all 224 visible lines of this frame are now in
-            // `raster_frame` — latch a coherent copy for presentation.
-            if line == 224
-                && self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64
-            {
-                self.raster_presented.copy_from_slice(&self.raster_frame);
-                self.raster_snapshots = self.raster_snapshots.wrapping_add(1);
-            }
-            // TIMING domain: lspc.rs counts scanline 0..223 as the visible
-            // area (vblank_pending fires at 224). The +0x10 sprite-Y bias
-            // belongs to the sprite COORDINATE domain and is applied inside
-            // render_sprite_scanline, NOT here. Mapping timing lines
-            // 0x10..0xEF to output rows (previous code) rendered everything
-            // 16 lines late: the last 16 visible rows were drawn after the
-            // game's vblank handler had already rewritten VRAM for the next
-            // frame -> corrupted 16-line band at the bottom of the screen.
-            if line >= 224 {
-                continue;
-            }
-            let out_line = line as usize;
+        for row in self.raster_next_row..=end {
             crate::graphics::video::render_scanline(
                 &self.bus.lspc,
                 self.bus.palette_ram.as_ref(),
@@ -517,13 +516,48 @@ impl System {
                 &self.sprite_gfx_decoded,
                 &self.lo_rom,
                 &mut self.raster_frame,
-                out_line,
+                row as usize,
                 palette_bank,
                 screen_shadow,
                 bios_sfix,
                 self.fix_bank_type,
             );
             self.raster_lines_rendered = self.raster_lines_rendered.wrapping_add(1);
+        }
+        self.raster_next_row = end + 1;
+    }
+
+    /// Raster bookkeeping after an `lspc.tick`: flush passed rows before a
+    /// freshly raised IRQ2 handler can mutate video state, and finish +
+    /// latch the frame at the VBLANK-start (line 224) crossing.
+    fn raster_after_tick(&mut self, dp_was_pending: bool) {
+        // IRQ2 raised by this tick: snapshot every row the beam has
+        // passed with the current (pre-handler) state.
+        if !dp_was_pending
+            && self.bus.lspc.display_position_pending
+            && self.bus.lspc.scanline < 224
+        {
+            self.raster_catch_up(self.bus.lspc.scanline);
+        }
+        let cur = self.bus.lspc.scanline;
+        let prev = self.raster_prev_scanline;
+        if cur == prev {
+            return;
+        }
+        self.raster_prev_scanline = cur;
+        // Did this tick cross the VBLANK start line (224)? (wraps at 264)
+        let delta = (u32::from(cur) + 264 - u32::from(prev)) % 264;
+        let off_224 = (224 + 264 - u32::from(prev)) % 264;
+        if off_224 >= 1 && off_224 <= delta {
+            // Frame complete: flush the tail and latch a coherent copy
+            // for presentation (VBLANK-start snapshot, see PR#11).
+            self.raster_catch_up(223);
+            if self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64 {
+                self.raster_presented.copy_from_slice(&self.raster_frame);
+                self.raster_snapshots = self.raster_snapshots.wrapping_add(1);
+            }
+            // Rows of the NEXT frame start accumulating from 0.
+            self.raster_next_row = 0;
         }
     }
 
@@ -660,8 +694,9 @@ impl System {
         }
 
         // ============ LSPC + IRQ dispatch =============
+        let dp_was_pending = self.bus.lspc.display_position_pending;
         let _ = self.bus.lspc.tick(cycles);
-        self.raster_render_crossed_lines();
+        self.raster_after_tick(dp_was_pending);
         let cur_mask = self.m68k.sr.interrupt_mask();
         let req_level = if self.bus.lspc.irq3_pending {
             3
