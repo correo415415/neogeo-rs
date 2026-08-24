@@ -80,6 +80,35 @@ pub fn pcm2_swap(ymrom: &mut [u8], value: usize) {
     }
 }
 
+/// Which PCM2 scheme (and per-game parameter) a cart set uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pcm2Mode {
+    /// Early scheme: `pcm2_decrypt` block size in bytes.
+    Decrypt(usize),
+    /// Later scheme: `pcm2_swap` game row index.
+    Swap(usize),
+}
+
+/// Map a MAME set name to its NEO-PCM2 V-ROM scheme (None = V is plain).
+pub fn detect_pcm2(name: &str) -> Option<Pcm2Mode> {
+    let n = name.to_ascii_lowercase();
+    match n.as_str() {
+        // Early NEO-PCM2 (address-line swap): value = block size.
+        "mslug4" | "ms4plus" => Some(Pcm2Mode::Decrypt(8)),
+        "rotd" => Some(Pcm2Mode::Decrypt(16)),
+        "pnyaa" => Some(Pcm2Mode::Decrypt(4)),
+        // Later NEO-PCM2 (16MiB scramble): value = table row.
+        "kof2002" => Some(Pcm2Mode::Swap(0)),
+        "matrim" => Some(Pcm2Mode::Swap(1)),
+        "mslug5" | "mslug5h" => Some(Pcm2Mode::Swap(2)),
+        "svc" => Some(Pcm2Mode::Swap(3)),
+        "samsho5" | "samsho5h" => Some(Pcm2Mode::Swap(4)),
+        "kof2003" | "kof2003h" => Some(Pcm2Mode::Swap(5)),
+        "samsh5sp" | "samsh5sph" | "samsh5spho" => Some(Pcm2Mode::Swap(6)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
