@@ -79,6 +79,12 @@
     <string name="launch_join">Unirse a sala</string>
     <string name="launch_join_hint">Busca salas de este juego en tu red local (serás P2)</string>
     <string name="netplay_title">Multijugador LAN</string>
+    <string name="netplay_room_open">Sala creada</string>
+    <string name="netplay_room_waiting">Esperando a que otro jugador con este juego se una desde su dispositivo…</string>
+    <string name="netplay_host_ips">IP: %1$s · puerto %2$d</string>
+    <string name="netplay_rooms_header">Salas de tu juego en la red</string>
+    <string name="netplay_manual_header">¿No aparece? Conecta por IP</string>
+    <string name="netplay_join_chip">UNIRSE</string>
     <string name="netplay_pick_a_role">Crea una partida (serás P1) o únete a una existente (serás P2).</string>
     <string name="netplay_pick_a_role_game">Juego: %1$s. Crea una sala (serás P1) o únete a una sala de este mismo juego (serás P2).</string>
     <string name="netplay_host">Crear sala (esperar a otro jugador)</string>
