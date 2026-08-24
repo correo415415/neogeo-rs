@@ -734,202 +734,207 @@ fn render_sprite_layer_inner(
     screen_shadow: bool,
 ) {
     assert_eq!(frame.len(), SCREEN_W * SCREEN_H);
+    for scanline in 0..SCREEN_H as i32 {
+        render_sprite_scanline(
+            lspc, palette_ram, c_roms, decoded_gfx, lo_rom, frame, scanline,
+            auto_animation_counter, auto_animation_disabled,
+            palette_bank, screen_shadow,
+        );
+    }
+}
+
+/// Render the sprite layer for a **single output scanline** (0..224) into
+/// the full frame buffer. Extracted from `render_sprite_layer_inner` so the
+/// system can render incrementally as emulated scanlines are crossed.
+/// Required for raster effects: IRQ2-driven code that rewrites sprite X
+/// positions / SCB data mid-frame (e.g. the water ripple in TTE's VAPOROUS
+/// demo) is invisible to an end-of-frame render but shows up correctly when
+/// each line is drawn with the VRAM state current at that line.
+#[allow(clippy::too_many_arguments)]
+pub fn render_sprite_scanline(
+    lspc: &Lspc,
+    palette_ram: &[u8],
+    c_roms: &[Vec<u8>],
+    decoded_gfx: &[u8],
+    lo_rom: &[u8],
+    frame: &mut [u32],
+    scanline: i32,
+    auto_animation_counter: u32,
+    auto_animation_disabled: bool,
+    palette_bank: u8,
+    screen_shadow: bool,
+) {
+    if !(0..SCREEN_H as i32).contains(&scanline) || frame.len() != SCREEN_W * SCREEN_H {
+        return;
+    }
     // Need either raw C-ROM pairs or pre-decoded buffer; nothing else to draw.
     if c_roms.is_empty() && decoded_gfx.is_empty() {
         return;
     }
     let use_decoded = !decoded_gfx.is_empty();
     let vram = &lspc.vram[..];
-
     // If we don't have the Y-zoom table, build a synthetic 1:1 fallback so
     // games still render (just without proper vertical scaling).
     // The hardware ROM is 64 KiB. We index it as `lo_rom[(zoom_y<<8) | line]`.
     let have_lo_rom = lo_rom.len() >= 0x10000;
+    // Our 224-line output starts at hardware line 0x10 (VBEND) just like
+    // MAME's visible area. The sprite engine itself reasons in hardware
+    // scanlines, so keep the +0x10 bias here.
+    let hw_scanline = scanline + 0x10;
 
-    // MAME models the LSPC's "sprite-line" timer: at every scanline,
-    // `parse_sprites` writes the list of up to 96 active sprite indices
-    // into VRAM $8600/$8680 (even/odd scanlines) so the CPU can observe
-    // exactly which sprites the chip considers visible. Without that
-    // side-effect, games that read those VRAM addresses to drive
-    // copy-protection or special effects (sengoku3 RPG mode, certain
-    // CMC bootlegs) behave incorrectly.
-    //
-    // We don't have mutable access to `lspc.vram` here (frame rendering
-    // is supposed to be read-only). The buffered list is built locally
-    // in `active_sprites[]` and is observationally equivalent for the
-    // current scanline. If full MAME-fidelity becomes required, expose
-    // a mutable LSPC reference and uncomment the writes below.
-    //
-    // for s in 0..MAX_SPRITES_PER_LINE {
-    //     let target_addr = if scanline & 1 == 0 { 0x8600 } else { 0x8680 } + s;
-    //     lspc.vram[target_addr] = active_sprites[s];
-    // }
-
-    // ---------- MAME-style parse + draw per scanline ----------
-    // Important subtlety: chained sprite X coordinates are resolved while
-    // iterating the *active list for the current scanline*, not once globally
-    // for all 381 sprites. Large title/background compositions in Metal Slug
-    // rely on this behaviour; precomputing anchors globally can drop or shift
-    // edge tiles.
-    for scanline in 0..SCREEN_H as i32 {
-        // Our 224-line output starts at hardware line 0x10 (VBEND) just like
-        // MAME's visible area. The sprite engine itself reasons in hardware
-        // scanlines, so keep the +0x10 bias here.
-        let hw_scanline = scanline + 0x10;
-
-        // Pass A: build the active 96-sprite list exactly like
-        // `neosprite_base_device::parse_sprites`.
-        let mut active_sprites = [0u16; MAX_SPRITES_PER_LINE];
-        let mut active_count = 0usize;
-        let mut y_p = 0i32;
-        let mut rows_p = 0i32;
-        for sprite_number in 0..MAX_SPRITES_PER_SCREEN as u16 {
-            let y_control = vram[0x8200 | sprite_number as usize];
-            if (y_control & 0x40) == 0 {
-                y_p = 0x200 - ((y_control >> 7) as i32);
-                rows_p = (y_control & 0x3F) as i32;
-            }
-            // MAME's `parse_sprites` has an explicit `if (rows == 0) continue;`
-            // before the `sprite_on_scanline` check (neogeo_spr.cpp:486-489),
-            // even though our `sprite_on_scanline` now also returns true for
-            // rows==0. We keep the explicit gate to match the MAME control
-            // flow exactly: rows-zero sprites must NOT consume an active-list
-            // slot (otherwise the 96-per-line budget would be wasted).
-            if rows_p == 0 {
-                continue;
-            }
-            if !sprite_on_scanline(hw_scanline, y_p, rows_p) {
-                continue;
-            }
-            active_sprites[active_count] = sprite_number;
-            active_count += 1;
-            if active_count == MAX_SPRITES_PER_LINE {
-                break;
-            }
+    // Pass A: build the active 96-sprite list exactly like
+    // `neosprite_base_device::parse_sprites`.
+    let mut active_sprites = [0u16; MAX_SPRITES_PER_LINE];
+    let mut active_count = 0usize;
+    let mut y_p = 0i32;
+    let mut rows_p = 0i32;
+    for sprite_number in 0..MAX_SPRITES_PER_SCREEN as u16 {
+        let y_control = vram[0x8200 | sprite_number as usize];
+        if (y_control & 0x40) == 0 {
+            y_p = 0x200 - ((y_control >> 7) as i32);
+            rows_p = (y_control & 0x3F) as i32;
         }
-
-        // Pass B: draw the active list exactly in list order, resolving sticky
-        // chains from the previous *active* sprite, just like MAME.
-        let mut x = 0i32;
-        let mut y = 0i32;
-        let mut rows = 0i32;
-        let mut zoom_y = 0u8;
-        let mut zoom_x = 0i32;
-        for sprite in active_sprites[..active_count].iter().copied() {
-            let y_control = vram[0x8200 | sprite as usize];
-            let zoom_control = vram[0x8000 | sprite as usize];
-
-            if (y_control & 0x40) != 0 {
-                x = (x + zoom_x + 1) & 0x01FF;
-                zoom_x = ((zoom_control >> 8) & 0x0F) as i32;
-            } else {
-                y = 0x200 - ((y_control >> 7) as i32);
-                x = (vram[0x8400 | sprite as usize] >> 7) as i32;
-                zoom_y = (zoom_control & 0x00FF) as u8;
-                zoom_x = ((zoom_control >> 8) & 0x0F) as i32;
-                rows = (y_control & 0x3F) as i32;
-            }
-
-            // Hardware skip: sprites with x in [$140, $1F0] are off-screen.
-            if (0x140..=0x1F0).contains(&x) {
-                continue;
-            }
-            // Re-check Y coverage after reading from buffered list.
-            if !sprite_on_scanline(hw_scanline, y, rows) {
-                continue;
-            }
-
-            let sx_left = if x >= 0x1E0 { x - 0x200 } else { x };
-            let sprite_line_signed = (hw_scanline - y) & 0x01FF;
-            let mut zoom_line = sprite_line_signed & 0xFF;
-            let mut invert = (sprite_line_signed & 0x100) != 0;
-            if invert {
-                zoom_line ^= 0xFF;
-            }
-            if rows > 0x20 {
-                let period = (zoom_y as i32 + 1) << 1;
-                zoom_line %= period;
-                if zoom_line > zoom_y as i32 {
-                    zoom_line = period - 1 - zoom_line;
-                    invert = !invert;
-                }
-            }
-
-            let (tile_idx, mut sub_y) = if have_lo_rom {
-                let b = lo_rom[((zoom_y as usize) << 8) | (zoom_line as usize)];
-                ((b >> 4) as i32, (b & 0x0F) as i32)
-            } else {
-                let li = zoom_line as usize;
-                ((li / 16) as i32, (li & 0x0F) as i32)
-            };
-            let mut effective_tile = tile_idx;
-            if invert {
-                sub_y ^= 0x0F;
-                effective_tile ^= 0x1F;
-            }
-
-            // SCB1: tile attribute is 32 words (64 bytes) per sprite.
-            let scb1_base = (sprite as usize) * 0x40;
-            let entry = scb1_base + (effective_tile as usize) * 2;
-            if entry + 1 >= 0x7000 {
-                continue;
-            }
-            let tile_lo = vram[entry];
-            let attr = vram[entry + 1];
-            let mut code = (tile_lo as u32) | (((attr as u32) << 12) & 0xF_0000);
-
-            // Auto-animation substitution.
-            if !auto_animation_disabled {
-                if (attr & 0x08) != 0 {
-                    code = (code & !0x07) | (auto_animation_counter & 0x07);
-                } else if (attr & 0x04) != 0 {
-                    code = (code & !0x03) | (auto_animation_counter & 0x03);
-                }
-            }
-
-            let palette = (attr >> 8) as u16;
-            let hflip = (attr & 1) != 0;
-            if (attr & 2) != 0 {
-                sub_y ^= 0x0F;
-            }
-
-            // Horizontal blit. MAME walks the source tile pixel index in
-            // `i` and the dst column in `dst_x`; the zoom mask decides at
-            // each step whether to plot or skip. The source advances
-            // *every* iteration (only the destination is gated). H-flip
-            // is modelled exactly like MAME by negating the source
-            // increment and starting at pixel 15.
-            //
-            // Early-exit: once the mask is empty, every remaining
-            // iteration would be a no-op — bail to save work.
-            let mut zoom_x_mask = ZOOM_X_TABLES[(zoom_x & 0x0F) as usize];
-            let mut dst_x = sx_left;
-            let mut src_px: i32 = if hflip { 15 } else { 0 };
-            let src_inc: i32 = if hflip { -1 } else { 1 };
-            for _ in 0..16i32 {
-                if (zoom_x_mask & 0x8000) != 0 {
-                    if (0..SCREEN_W as i32).contains(&dst_x) {
-                        let c = if use_decoded {
-                            decoded_sprite_pixel(decoded_gfx, code, src_px as u8, sub_y as u8)
-                        } else {
-                            sprite_tile_pixel(c_roms, code, src_px as u8, sub_y as u8)
-                        };
-                        if c != 0 {
-                            let pal_idx = palette.wrapping_mul(16).wrapping_add(c as u16);
-                            frame[scanline as usize * SCREEN_W + dst_x as usize] =
-                                lookup_palette(palette_ram, pal_idx, palette_bank, screen_shadow);
-                        }
-                    }
-                    dst_x += 1;
-                }
-                zoom_x_mask <<= 1;
-                if zoom_x_mask == 0 {
-                    break;
-                }
-                src_px += src_inc;
-            }
+        // MAME's `parse_sprites` has an explicit `if (rows == 0) continue;`
+        // before the `sprite_on_scanline` check (neogeo_spr.cpp:486-489),
+        // even though our `sprite_on_scanline` now also returns true for
+        // rows==0. We keep the explicit gate to match the MAME control
+        // flow exactly: rows-zero sprites must NOT consume an active-list
+        // slot (otherwise the 96-per-line budget would be wasted).
+        if rows_p == 0 {
+            continue;
+        }
+        if !sprite_on_scanline(hw_scanline, y_p, rows_p) {
+            continue;
+        }
+        active_sprites[active_count] = sprite_number;
+        active_count += 1;
+        if active_count == MAX_SPRITES_PER_LINE {
+            break;
         }
     }
+
+    // Pass B: draw the active list exactly in list order, resolving sticky
+    // chains from the previous *active* sprite, just like MAME.
+    let mut x = 0i32;
+    let mut y = 0i32;
+    let mut rows = 0i32;
+    let mut zoom_y = 0u8;
+    let mut zoom_x = 0i32;
+    for sprite in active_sprites[..active_count].iter().copied() {
+        let y_control = vram[0x8200 | sprite as usize];
+        let zoom_control = vram[0x8000 | sprite as usize];
+
+        if (y_control & 0x40) != 0 {
+            x = (x + zoom_x + 1) & 0x01FF;
+            zoom_x = ((zoom_control >> 8) & 0x0F) as i32;
+        } else {
+            y = 0x200 - ((y_control >> 7) as i32);
+            x = (vram[0x8400 | sprite as usize] >> 7) as i32;
+            zoom_y = (zoom_control & 0x00FF) as u8;
+            zoom_x = ((zoom_control >> 8) & 0x0F) as i32;
+            rows = (y_control & 0x3F) as i32;
+        }
+
+        // Hardware skip: sprites with x in [$140, $1F0] are off-screen.
+        if (0x140..=0x1F0).contains(&x) {
+            continue;
+        }
+        // Re-check Y coverage after reading from buffered list.
+        if !sprite_on_scanline(hw_scanline, y, rows) {
+            continue;
+        }
+
+        let sx_left = if x >= 0x1E0 { x - 0x200 } else { x };
+        let sprite_line_signed = (hw_scanline - y) & 0x01FF;
+        let mut zoom_line = sprite_line_signed & 0xFF;
+        let mut invert = (sprite_line_signed & 0x100) != 0;
+        if invert {
+            zoom_line ^= 0xFF;
+        }
+        if rows > 0x20 {
+            let period = (zoom_y as i32 + 1) << 1;
+            zoom_line %= period;
+            if zoom_line > zoom_y as i32 {
+                zoom_line = period - 1 - zoom_line;
+                invert = !invert;
+            }
+        }
+
+        let (tile_idx, mut sub_y) = if have_lo_rom {
+            let b = lo_rom[((zoom_y as usize) << 8) | (zoom_line as usize)];
+            ((b >> 4) as i32, (b & 0x0F) as i32)
+        } else {
+            let li = zoom_line as usize;
+            ((li / 16) as i32, (li & 0x0F) as i32)
+        };
+        let mut effective_tile = tile_idx;
+        if invert {
+            sub_y ^= 0x0F;
+            effective_tile ^= 0x1F;
+        }
+
+        // SCB1: tile attribute is 32 words (64 bytes) per sprite.
+        let scb1_base = (sprite as usize) * 0x40;
+        let entry = scb1_base + (effective_tile as usize) * 2;
+        if entry + 1 >= 0x7000 {
+            continue;
+        }
+        let tile_lo = vram[entry];
+        let attr = vram[entry + 1];
+        let mut code = (tile_lo as u32) | (((attr as u32) << 12) & 0xF_0000);
+
+        // Auto-animation substitution.
+        if !auto_animation_disabled {
+            if (attr & 0x08) != 0 {
+                code = (code & !0x07) | (auto_animation_counter & 0x07);
+            } else if (attr & 0x04) != 0 {
+                code = (code & !0x03) | (auto_animation_counter & 0x03);
+            }
+        }
+
+        let palette = (attr >> 8) as u16;
+        let hflip = (attr & 1) != 0;
+        if (attr & 2) != 0 {
+            sub_y ^= 0x0F;
+        }
+
+        // Horizontal blit. MAME walks the source tile pixel index in
+        // `i` and the dst column in `dst_x`; the zoom mask decides at
+        // each step whether to plot or skip. The source advances
+        // *every* iteration (only the destination is gated). H-flip
+        // is modelled exactly like MAME by negating the source
+        // increment and starting at pixel 15.
+        //
+        // Early-exit: once the mask is empty, every remaining
+        // iteration would be a no-op — bail to save work.
+        let mut zoom_x_mask = ZOOM_X_TABLES[(zoom_x & 0x0F) as usize];
+        let mut dst_x = sx_left;
+        let mut src_px: i32 = if hflip { 15 } else { 0 };
+        let src_inc: i32 = if hflip { -1 } else { 1 };
+        for _ in 0..16i32 {
+            if (zoom_x_mask & 0x8000) != 0 {
+                if (0..SCREEN_W as i32).contains(&dst_x) {
+                    let c = if use_decoded {
+                        decoded_sprite_pixel(decoded_gfx, code, src_px as u8, sub_y as u8)
+                    } else {
+                        sprite_tile_pixel(c_roms, code, src_px as u8, sub_y as u8)
+                    };
+                    if c != 0 {
+                        let pal_idx = palette.wrapping_mul(16).wrapping_add(c as u16);
+                        frame[scanline as usize * SCREEN_W + dst_x as usize] =
+                            lookup_palette(palette_ram, pal_idx, palette_bank, screen_shadow);
+                    }
+                }
+                dst_x += 1;
+            }
+            zoom_x_mask <<= 1;
+            if zoom_x_mask == 0 {
+                break;
+            }
+            src_px += src_inc;
+        }
+    }
+
 }
 
 /// Compose the full frame: background colour + sprites + fix layer (on top).
@@ -968,6 +973,136 @@ pub fn render_frame_with_bank(
         lspc, palette_ram, s_rom, c_roms, decoded_gfx, lo_rom,
         palette_bank, false, None, FixBankType::Std,
     )
+}
+
+/// Render the fix layer for a **single output scanline** (0..224).
+/// Per-line port of `render_fix_layer_inner_with_bank_and_crop`: for output
+/// line `y` the tile row is `(y / 8) + 2` and the in-tile row is `y % 8`.
+/// The GAROU per-row bank pre-pass is re-run per call — it is a tiny
+/// bounded loop (<= 32 VRAM word pairs) so the cost is negligible, and it
+/// keeps mid-frame bank rewrites raster-accurate too.
+#[allow(clippy::too_many_arguments)]
+pub fn render_fix_scanline(
+    lspc: &Lspc,
+    palette_ram: &[u8],
+    s_rom: &[u8],
+    frame: &mut [u32],
+    out_line: usize,
+    palette_bank: u8,
+    screen_shadow: bool,
+    bank_type: FixBankType,
+) {
+    if out_line >= SCREEN_H || frame.len() != SCREEN_W * SCREEN_H {
+        return;
+    }
+    let banked = bank_type != FixBankType::Std && s_rom.len() > 0x20000;
+    let row = (out_line / 8) + 2;
+    let py = (out_line % 8) as u8;
+
+    // GAROU per-row bank table (see full-frame renderer for details).
+    let mut garouoffsets = [0u32; 34];
+    if banked && bank_type == FixBankType::Garou {
+        let mut garoubank: u32 = 0;
+        let mut k: usize = 0;
+        let mut y: usize = 0;
+        while y < 32 {
+            let a = lspc.vram[0x7500 + k];
+            let b = lspc.vram[0x7580 + k];
+            if a == 0x0200 && (b & 0xFF00) == 0xFF00 {
+                garoubank = (b & 3) as u32;
+                garouoffsets[y] = garoubank;
+                y += 1;
+            }
+            if y < 34 {
+                garouoffsets[y] = garoubank;
+                y += 1;
+            }
+            k += 2;
+        }
+    }
+
+    let col_start = FIX_LAYER_OVERSCAN_COLS;
+    let col_end = 40usize.saturating_sub(FIX_LAYER_OVERSCAN_COLS);
+    for col in col_start..col_end {
+        let cell_word = lspc.vram[0x7000 + col * 32 + row];
+        if cell_word == 0 {
+            continue;
+        }
+        let mut tile_no = (cell_word & 0x0FFF) as u32;
+        let palette = ((cell_word >> 12) & 0x0F) as u16;
+        if banked {
+            match bank_type {
+                FixBankType::Garou => {
+                    let idx = (row - 2) & 31;
+                    tile_no = tile_no.wrapping_add(0x1000 * (garouoffsets[idx] ^ 3));
+                }
+                FixBankType::Kof2000 => {
+                    let base = 0x7500 + ((row - 1) & 31) + 32 * (col / 6);
+                    let w = lspc.vram[base] as u32;
+                    let shift = (5 - (col % 6) as u32) * 2;
+                    tile_no = tile_no.wrapping_add(0x1000 * (((w >> shift) & 3) ^ 3));
+                }
+                FixBankType::Std => {}
+            }
+        }
+        for px in 0..8u8 {
+            let c = fix_tile_pixel(s_rom, tile_no, px, py);
+            if c == 0 {
+                continue;
+            }
+            let pal_idx = palette * 16 + c as u16;
+            let rgba = lookup_palette(palette_ram, pal_idx, palette_bank, screen_shadow);
+            let x = col * 8 + px as usize;
+            if x < SCREEN_W {
+                frame[out_line * SCREEN_W + x] = rgba;
+            }
+        }
+    }
+}
+
+/// Compose one full output scanline (backdrop + sprites + fix) into an
+/// accumulating frame buffer using the **current** LSPC/palette state.
+///
+/// This is the raster-rendering entry point: the system calls it each time
+/// the LSPC crosses a visible scanline, so mid-frame VRAM rewrites driven
+/// by the display-position (IRQ2) timer — per-line sprite X shifts used for
+/// water ripple, floor warping, etc. — show up exactly on the lines they
+/// affect, matching real hardware.
+#[allow(clippy::too_many_arguments)]
+pub fn render_scanline(
+    lspc: &Lspc,
+    palette_ram: &[u8],
+    s_rom: &[u8],
+    c_roms: &[Vec<u8>],
+    decoded_gfx: &[u8],
+    lo_rom: &[u8],
+    frame: &mut [u32],
+    out_line: usize,
+    palette_bank: u8,
+    screen_shadow: bool,
+    bios_sfix: Option<&[u8]>,
+    fix_bank_type: FixBankType,
+) {
+    if out_line >= SCREEN_H || frame.len() != SCREEN_W * SCREEN_H {
+        return;
+    }
+    // Backdrop fill for this line (palette entry $FFF).
+    let backdrop = lookup_palette(palette_ram, 0xFFF, palette_bank, screen_shadow);
+    let row_off = out_line * SCREEN_W;
+    for px in frame[row_off..row_off + SCREEN_W].iter_mut() {
+        *px = backdrop;
+    }
+    render_sprite_scanline(
+        lspc, palette_ram, c_roms, decoded_gfx, lo_rom, frame, out_line as i32,
+        lspc.auto_animation_counter, lspc.auto_animation_disabled,
+        palette_bank, screen_shadow,
+    );
+    let fix_src = bios_sfix.unwrap_or(s_rom);
+    let effective_bank = if bios_sfix.is_some() { FixBankType::Std } else { fix_bank_type };
+    render_fix_scanline(
+        lspc, palette_ram, fix_src, frame, out_line,
+        palette_bank, screen_shadow, effective_bank,
+    );
 }
 
 /// Like [`render_frame_with_bank`] but also honours the LSPC's global
