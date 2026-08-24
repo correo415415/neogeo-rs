@@ -299,3 +299,14 @@ mod tests {
         assert_eq!(bus.bank_base_for(3), 0x3C000 & (bus.m1_rom.len() - 1));
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+//
+// `m1_rom` / `sm1_rom` son ROM y quedan fuera del savestate.
+
+crate::state::state_fields!(AudioBus {
+    ram, ym, bank_sel, use_cart_audio, soundlatch, soundlatch_pending,
+    soundlatch2, nmi_enable, nmi_asserted,
+});

@@ -164,3 +164,16 @@ impl Cpu {
         u16::from_le_bytes([lo, hi])
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+crate::state::state_fields!(Registers {
+    a, f, b, c, d, e, h, l, af_, bc_, de_, hl_, ix, iy, sp, pc, i, r,
+    iff1, iff2, halted, im, wz, q, f_was_written,
+});
+
+crate::state::state_fields!(Cpu {
+    regs, cycles, nmi_pending, irq_line, irq_data, ei_delay,
+});

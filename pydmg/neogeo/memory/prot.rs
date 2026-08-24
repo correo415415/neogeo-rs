@@ -853,3 +853,50 @@ mod prot_tests {
         }
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+crate::state::state_fields!(Alpha8921 { clk, load, even, h, c, sr, gad, gbd });
+crate::state::state_fields!(FatFury2Prot { alpha });
+crate::state::state_fields!(Kof98Prot { prot_state, default_rom });
+crate::state::state_fields!(MslugXProt { command, counter });
+
+impl crate::state::StateSer for SmaProt {
+    fn save(&self, out: &mut Vec<u8>) {
+        // `game` es inmutable (viene del set cargado); solo persiste el RNG.
+        self.rng.save(out);
+    }
+    fn load(&mut self, r: &mut crate::state::StateReader<'_>) -> Result<(), crate::state::StateError> {
+        self.rng.load(r)
+    }
+}
+
+impl crate::state::StateSer for CartProt {
+    fn save(&self, out: &mut Vec<u8>) {
+        // Tag + payload mutable. La identidad (variante/juego) la fija el
+        // cartucho cargado; `load` valida que el tag coincida.
+        match self {
+            Self::None => out.push(0),
+            Self::FatFury2(p) => { out.push(1); p.save(out); }
+            Self::Kof98(p) => { out.push(2); p.save(out); }
+            Self::MslugX(p) => { out.push(3); p.save(out); }
+            Self::Sma(p) => { out.push(4); p.save(out); }
+            Self::Pvc(p) => { out.push(5); p.save(out); }
+        }
+    }
+    fn load(&mut self, r: &mut crate::state::StateReader<'_>) -> Result<(), crate::state::StateError> {
+        use crate::state::StateError;
+        let tag = r.u8()?;
+        match (tag, self) {
+            (0, Self::None) => Ok(()),
+            (1, Self::FatFury2(p)) => p.load(r),
+            (2, Self::Kof98(p)) => p.load(r),
+            (3, Self::MslugX(p)) => p.load(r),
+            (4, Self::Sma(p)) => p.load(r),
+            (5, Self::Pvc(p)) => p.load(r),
+            _ => Err(StateError::Corrupt("CartProt no coincide con el cartucho cargado")),
+        }
+    }
+}

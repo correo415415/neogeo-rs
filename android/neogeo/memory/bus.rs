@@ -798,3 +798,18 @@ impl Bus for NeoGeoBus {
         }
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+//
+// `system_rom` y `p_rom` son ROM (se reponen desde el set cargado); todo lo
+// demás es estado mutable y viaja en el savestate.
+
+crate::state::state_fields!(NeoGeoBus {
+    work_ram, palette_ram, backup_ram, memcard_ram, memcard_present,
+    lspc, upd4990a, p_rom_bank_offset, bios_at_zero, systemlatch, dipsw,
+    systype, sound_latch, sound_latch_pending, sound_reply, p1_input,
+    p2_input, start_select, coin_inputs, watchdog_cycles, watchdog_expired,
+    prot,
+});

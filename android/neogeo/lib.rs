@@ -62,3 +62,6 @@ pub use graphics::lspc;
 pub use graphics::palette_lut;
 /// Alias plano: `pydmg_neogeo::ym2610` ≡ `pydmg_neogeo::audio::ym2610`.
 pub use audio::ym2610;
+
+/// Savestates: serialización binaria del estado de emulación.
+pub mod state;

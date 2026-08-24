@@ -283,3 +283,15 @@ impl Default for Lspc {
         Self::new()
     }
 }
+
+// ============================================================================
+// Savestates
+// ============================================================================
+
+crate::state::state_fields!(Lspc {
+    vram, vram_addr, vram_read_buffer, vram_mod, lspc_mode, timer_reload,
+    line_cycle_accum, scanline, in_vblank, vblank_pending,
+    display_position_pending, irq3_pending, display_position_interrupt_control,
+    display_counter, auto_animation_counter, auto_animation_frame_counter,
+    auto_animation_disabled,
+});

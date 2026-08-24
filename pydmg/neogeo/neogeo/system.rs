@@ -102,6 +102,10 @@ pub struct System {
     pub bus: NeoGeoBus,
     pub audio: AudioBus,
     pub config: SystemConfig,
+    /// Nombre del set MAME cargado (p.ej. "mslugx"). Identidad usada por la
+    /// guardia de savestates: un estado solo puede cargarse sobre el mismo
+    /// juego. Vacío hasta que `load()` instala un cartucho.
+    pub game_name: String,
     /// Master cycle counter, 68000 cycles since reset.
     pub master_cycles: u64,
     /// Last instruction count — bounded so the CLI can do "run N instructions".
@@ -175,6 +179,7 @@ impl System {
             bus: NeoGeoBus::new(),
             audio,
             config,
+            game_name: String::new(),
             master_cycles: 0,
             instructions: 0,
             s_rom: Vec::new(),
@@ -206,6 +211,7 @@ impl System {
 
     /// Load ROMs into the bus and reset both CPUs.
     pub fn load(&mut self, mut romset: RomSet) -> Result<()> {
+        self.game_name = romset.cart.name.clone();
         if !romset.bios.is_empty() {
             self.bus.load_system_rom(romset.bios);
         }
@@ -817,5 +823,120 @@ impl System {
             YM_OUTPUT_HZ,
         );
         Ok(())
+    }
+}
+
+// ============================================================================
+// Savestates
+// ============================================================================
+//
+// Payload de `System` (tras la cabecera NGSS): CPUs + buses + contadores de
+// planificación. Quedan fuera:
+//   * ROMs (`s_rom`, `bios_sfix`, `c_roms`, `sprite_gfx_decoded`, `lo_rom`,
+//     y dentro de bus/audio: `system_rom`, `p_rom`, `m1_rom`, `sm1_rom`,
+//     V-ROMs) — se reponen de la instancia viva.
+//   * Contadores dbg_* y `audio_buffer` — diagnósticos / stream transitorio.
+//   * Buffers raster — se invalidan al cargar; el renderer usa el fallback
+//     de render completo hasta el siguiente snapshot de VBLANK.
+
+impl System {
+    /// Serializa el estado completo de emulación a un buffer binario
+    /// autocontenido (cabecera NGSS + versión + juego + payload).
+    #[must_use]
+    pub fn save_state(&self) -> Vec<u8> {
+        use crate::state::{STATE_MAGIC, STATE_VERSION};
+        let mut out = Vec::with_capacity(0x60000);
+        out.extend_from_slice(&STATE_MAGIC);
+        out.extend_from_slice(&STATE_VERSION.to_le_bytes());
+        let name = self.game_name.as_bytes();
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name);
+        self.save_payload(&mut out);
+        out
+    }
+
+    /// Restaura un estado creado por [`Self::save_state`].
+    ///
+    /// Valida magic, versión y que el juego coincida con el cargado.
+    /// La carga es transaccional: si el payload está corrupto o truncado,
+    /// el estado previo se restaura y se devuelve el error.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), crate::state::StateError> {
+        use crate::state::{StateError, StateReader, STATE_MAGIC, STATE_VERSION};
+        let mut r = StateReader::new(data);
+        if r.take(4)? != STATE_MAGIC {
+            return Err(StateError::BadMagic);
+        }
+        let version = r.u16()?;
+        if version != STATE_VERSION {
+            return Err(StateError::BadVersion(version));
+        }
+        let name_len = r.u32()? as usize;
+        if name_len > 256 {
+            return Err(StateError::Corrupt("nombre de juego demasiado largo"));
+        }
+        let found = String::from_utf8_lossy(r.take(name_len)?).into_owned();
+        if found != self.game_name {
+            return Err(StateError::GameMismatch {
+                expected: self.game_name.clone(),
+                found,
+            });
+        }
+        // Transaccional: rescate del estado actual por si el payload falla
+        // a medio camino (el volcado es barato: ~220 KiB).
+        let mut rescue = Vec::with_capacity(0x60000);
+        self.save_payload(&mut rescue);
+        match self.load_payload(&mut r) {
+            Ok(()) => {
+                self.post_load_fixup();
+                Ok(())
+            }
+            Err(e) => {
+                let mut rr = StateReader::new(&rescue);
+                let _ = self.load_payload(&mut rr);
+                self.post_load_fixup();
+                Err(e)
+            }
+        }
+    }
+
+    fn save_payload(&self, out: &mut Vec<u8>) {
+        use crate::state::StateSer;
+        self.m68k.save(out);
+        self.z80.save(out);
+        self.bus.save(out);
+        self.audio.save(out);
+        self.master_cycles.save(out);
+        self.instructions.save(out);
+        self.z80_cycles_owed.save(out);
+        self.audio_cycles_owed.save(out);
+    }
+
+    fn load_payload(
+        &mut self,
+        r: &mut crate::state::StateReader<'_>,
+    ) -> Result<(), crate::state::StateError> {
+        use crate::state::StateSer;
+        self.m68k.load(r)?;
+        self.z80.load(r)?;
+        self.bus.load(r)?;
+        self.audio.load(r)?;
+        self.master_cycles.load(r)?;
+        self.instructions.load(r)?;
+        self.z80_cycles_owed.load(r)?;
+        self.audio_cycles_owed.load(r)?;
+        Ok(())
+    }
+
+    /// Invalida estado derivado tras cargar un savestate.
+    fn post_load_fixup(&mut self) {
+        // El pipeline raster incremental queda desincronizado del nuevo
+        // scanline del LSPC: invalidarlo fuerza el fallback de render
+        // completo hasta el siguiente snapshot de VBLANK.
+        self.raster_next_row = 0;
+        self.raster_prev_scanline = self.bus.lspc.scanline;
+        self.raster_lines_rendered = 0;
+        self.raster_snapshots = 0;
+        // Descarta muestras de audio del estado anterior.
+        self.audio_buffer.clear();
     }
 }
