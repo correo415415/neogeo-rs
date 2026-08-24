@@ -363,6 +363,26 @@
                 android:text="Continuar" />
 
             <Button
+                android:id="@+id/btn_save_state"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/btn_secondary"
+                android:textColor="@color/fg_primary"
+                android:textAllCaps="false"
+                android:text="@string/pause_save_state" />
+
+            <Button
+                android:id="@+id/btn_load_state"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/btn_secondary"
+                android:textColor="@color/fg_primary"
+                android:textAllCaps="false"
+                android:text="@string/pause_load_state" />
+
+            <Button
                 android:id="@+id/btn_back_to_library"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"

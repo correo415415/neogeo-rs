@@ -63,6 +63,13 @@ object NativeBridge {
     external fun nativeScreenHeight(): Int
     external fun nativeAudioSampleRate(): Int
 
+    // Savestates (NGSS v1: cabecera + identidad de juego + payload, ~220 KiB).
+    /** Serializa el estado completo; null si no hay emulador cargado. */
+    external fun nativeSaveState(): ByteArray?
+    /** Restaura un estado de [nativeSaveState]. Valida juego/versión en el
+     *  core (carga transaccional: si falla, el estado previo se conserva). */
+    external fun nativeLoadState(data: ByteArray): Boolean
+
     // Netplay support (LAN multiplayer, lockstep-with-delay).
     /** Monotonic frame counter, increments once per `nativeRunFrame`. */
     external fun nativeFrameCounter(): Int

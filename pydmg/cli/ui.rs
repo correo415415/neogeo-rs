@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -233,6 +234,8 @@ pub fn run_ui(sys: &mut System, opts: UiOptions) -> Result<()> {
     let mut last_fps = 0.0_f64;
     // Track current fullscreen state so F11 can toggle it.
     let mut is_fullscreen = opts.fullscreen;
+    // Savestates: slot activo (0..9). F5 guarda, F9 carga, F6/F7 cambian slot.
+    let mut save_slot: u32 = 0;
 
     // Neo Geo corre a 59.185606 Hz. Limitamos el bucle a ese ritmo,
     // salvo que el usuario active vsync (en cuyo caso el cap lo pone
@@ -280,6 +283,30 @@ pub fn run_ui(sys: &mut System, opts: UiOptions) -> Result<()> {
                                 is_fullscreen,
                             )?;
                         }
+                    } else if key == Keycode::F5 {
+                        let path = state_path(&sys.game_name, save_slot);
+                        match save_state_to(sys, &path) {
+                            Ok(bytes) => log::info!(
+                                "F5: savestate slot {save_slot} guardado ({bytes} bytes) en {}",
+                                path.display()
+                            ),
+                            Err(e) => log::warn!("F5: fallo guardando savestate: {e:#}"),
+                        }
+                    } else if key == Keycode::F9 {
+                        let path = state_path(&sys.game_name, save_slot);
+                        match load_state_from(sys, &path) {
+                            Ok(()) => log::info!(
+                                "F9: savestate slot {save_slot} cargado desde {}",
+                                path.display()
+                            ),
+                            Err(e) => log::warn!("F9: fallo cargando savestate: {e:#}"),
+                        }
+                    } else if key == Keycode::F6 {
+                        save_slot = (save_slot + 9) % 10;
+                        log::info!("F6: slot de savestate activo = {save_slot}");
+                    } else if key == Keycode::F7 {
+                        save_slot = (save_slot + 1) % 10;
+                        log::info!("F7: slot de savestate activo = {save_slot}");
                     } else {
                         apply_key(sys, key, true);
                     }
@@ -346,6 +373,33 @@ pub fn run_ui(sys: &mut System, opts: UiOptions) -> Result<()> {
     Ok(())
 }
 
+/// Ruta del fichero de savestate para `game` y `slot`:
+/// `./savestates/<game>.slot<N>.ngss` (el directorio se crea al guardar).
+fn state_path(game: &str, slot: u32) -> PathBuf {
+    let name = if game.is_empty() { "unknown" } else { game };
+    PathBuf::from("savestates").join(format!("{name}.slot{slot}.ngss"))
+}
+
+fn save_state_to(sys: &System, path: &PathBuf) -> Result<usize> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creando directorio {}", dir.display()))?;
+    }
+    let data = sys.save_state();
+    std::fs::write(path, &data)
+        .with_context(|| format!("escribiendo {}", path.display()))?;
+    Ok(data.len())
+}
+
+fn load_state_from(sys: &mut System, path: &PathBuf) -> Result<()> {
+    let data = std::fs::read(path)
+        .with_context(|| format!("leyendo {}", path.display()))?;
+    sys.load_state(&data)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("savestate rechazado")?;
+    Ok(())
+}
+
 fn build_canvas(window: Window, vsync: bool) -> Result<Canvas<Window>> {
     if vsync {
         log::info!("SDL UI: solicitando vsync si el backend lo soporta");
@@ -385,7 +439,7 @@ fn update_title(
 ) -> Result<()> {
     let mode = if fullscreen { "FS" } else { "WIN" };
     let title = format!(
-        "neogeo-rs | {view_w}×{view_h} [{mode}] | {:.1} FPS | F11 fullscreen | ESC salir | 5 moneda | Enter START | Flechas mover | Z/X/C/V = A/B/C/D",
+        "neogeo-rs | {view_w}×{view_h} [{mode}] | {:.1} FPS | F5 guardar | F9 cargar | F6/F7 slot | F11 fullscreen | ESC salir | 5 moneda | Enter START | Z/X/C/V = A/B/C/D",
         fps
     );
     canvas.window_mut().set_title(&title).map_err(anyhow::Error::msg)?;

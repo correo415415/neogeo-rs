@@ -64,6 +64,14 @@
     <string name="btn_d">D</string>
 
     <!-- Netplay -->
+    <string name="pause_save_state">Guardar estado</string>
+    <string name="pause_load_state">Cargar estado</string>
+    <string name="state_saved">Estado guardado</string>
+    <string name="state_save_failed">No se pudo guardar el estado</string>
+    <string name="state_loaded">Estado cargado</string>
+    <string name="state_load_failed">No se pudo cargar el estado</string>
+    <string name="state_none">No hay estado guardado para este juego</string>
+    <string name="state_netplay_blocked">Savestates no disponibles en partida LAN</string>
     <string name="netplay_title">Multijugador LAN</string>
     <string name="netplay_pick_a_role">Crea una partida (serás P1) o únete a una existente (serás P2).</string>
     <string name="netplay_host">Crear partida (esperar al P2)</string>
