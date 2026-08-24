@@ -80,18 +80,45 @@ case "${1:-}" in
         ;;
     --release)
         echo ""
-        echo "==> Assembling release APK (unsigned)"
+        # --- Auto-generate a local signing keystore on first use ---------
+        # Gradle's `pydmgRelease` signingConfig picks it up automatically
+        # (see android-app/app/build.gradle.kts), so assembleRelease
+        # produces a SIGNED, installable APK with zero manual steps.
+        # Override credentials for CI with:
+        #   PYDMG_KEYSTORE_PASS=... PYDMG_KEY_ALIAS=... ./build-android.sh --release
+        KEYSTORE="$ROOT/android-app/release.keystore"
+        KS_PASS="${PYDMG_KEYSTORE_PASS:-pydmg-neogeo}"
+        KS_ALIAS="${PYDMG_KEY_ALIAS:-pydmg}"
+        if [[ ! -f "$KEYSTORE" ]]; then
+            if command -v keytool >/dev/null 2>&1; then
+                echo "==> Generating local release keystore (first run)"
+                keytool -genkeypair -v \
+                    -keystore "$KEYSTORE" \
+                    -alias "$KS_ALIAS" \
+                    -keyalg RSA -keysize 2048 -validity 10000 \
+                    -storepass "$KS_PASS" -keypass "$KS_PASS" \
+                    -dname "CN=pydmg-neogeo, OU=dev, O=pydmg, L=local, S=local, C=ES"
+            else
+                echo "WARN: keytool not found (install a JDK). Building UNSIGNED release."
+            fi
+        fi
+        echo "==> Assembling release APK"
         cd "$ROOT/android-app"
         ./gradlew assembleRelease
         echo ""
-        echo "Unsigned APK: android-app/app/build/outputs/apk/release/app-release-unsigned.apk"
-        echo "Sign it with apksigner before installing."
+        if [[ -f "$KEYSTORE" ]]; then
+            echo "Signed release APK: android-app/app/build/outputs/apk/release/app-release.apk"
+            echo "Install directly:   adb install -r app/build/outputs/apk/release/app-release.apk"
+        else
+            echo "Unsigned APK: android-app/app/build/outputs/apk/release/app-release-unsigned.apk"
+            echo "Sign it with apksigner before installing."
+        fi
         ;;
     "")
         echo ""
         echo "Native libs ready. Next step:"
-        echo "    cd android-app && ./gradlew assembleDebug"
-        echo "OR re-run this script with --apk."
+        echo "    cd android-app && ./gradlew assembleDebug     # APK de depuración"
+        echo "    ./build-android.sh --release                  # APK release firmada"
         ;;
     *)
         echo "Unknown argument: $1"

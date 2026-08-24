@@ -17,24 +17,49 @@ android {
         applicationId = "com.pydmg.neogeo"
         minSdk = 24            // Android 7.0 — covers ~97 % of devices in 2026
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         // Note: abiFilters are NOT pinned. Whichever ABIs the user has
         // populated under src/main/jniLibs/<abi>/ will be packaged. The
         // build-android.sh script populates arm64-v8a + armeabi-v7a + x86_64.
     }
 
+    signingConfigs {
+        // Local self-signed release keystore. build-android.sh generates it
+        // with `keytool` on first `--release` run; credentials can be
+        // overridden via env vars for CI (PYDMG_KEYSTORE_PASS / PYDMG_KEY_ALIAS).
+        create("pydmgRelease") {
+            val ks = rootProject.file("release.keystore")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = System.getenv("PYDMG_KEYSTORE_PASS") ?: "pydmg-neogeo"
+                keyAlias = System.getenv("PYDMG_KEY_ALIAS") ?: "pydmg"
+                keyPassword = System.getenv("PYDMG_KEYSTORE_PASS") ?: "pydmg-neogeo"
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 full shrink + resource shrink: drops unused AndroidX/Material
+            // code paths, cutting APK size ~40% and slightly improving cold
+            // start (less DEX to verify). JNI entry points are protected by
+            // proguard-rules.pro keeps.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Signing: leave to user. `./gradlew assembleRelease` will
-            // produce an UNSIGNED apk; sign with `apksigner` or attach
-            // a keystore via `signingConfigs { ... }`.
+            // Signed automatically with a locally-generated keystore when
+            // available (see signingConfigs below + build-android.sh which
+            // creates `release.keystore` on first use). Falls back to an
+            // unsigned APK if no keystore exists.
+            val ks = rootProject.file("release.keystore")
+            if (ks.exists()) {
+                signingConfig = signingConfigs.getByName("pydmgRelease")
+            }
         }
         debug {
             // Debug builds embed the unstripped .so, faster to iterate.

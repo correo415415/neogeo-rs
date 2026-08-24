@@ -25,7 +25,7 @@ REM
 REM  Usage:
 REM    build-android.bat              REM cross-compile .so for 3 ABIs
 REM    build-android.bat --apk        REM also assemble debug APK
-REM    build-android.bat --release    REM release APK (UNSIGNED)
+REM    build-android.bat --release    REM release APK (SIGNED, keystore auto)
 REM ============================================================
 setlocal enabledelayedexpansion
 
@@ -102,13 +102,36 @@ goto END
 
 :APK_RELEASE
 echo.
-echo ==^> Assembling release APK (unsigned)
+REM --- Auto-generate a local signing keystore on first use ---
+REM Gradle's pydmgRelease signingConfig picks it up automatically, so
+REM assembleRelease produces a SIGNED, installable APK.
+set KEYSTORE=%ROOT%android-app\release.keystore
+if "%PYDMG_KEYSTORE_PASS%"=="" set PYDMG_KEYSTORE_PASS=pydmg-neogeo
+if "%PYDMG_KEY_ALIAS%"=="" set PYDMG_KEY_ALIAS=pydmg
+if not exist "%KEYSTORE%" (
+    where keytool >nul 2>&1
+    if errorlevel 1 (
+        echo WARN: keytool not found - install a JDK. Building UNSIGNED release.
+    ) else (
+        echo ==^> Generating local release keystore ^(first run^)
+        keytool -genkeypair -v -keystore "%KEYSTORE%" -alias %PYDMG_KEY_ALIAS% ^
+            -keyalg RSA -keysize 2048 -validity 10000 ^
+            -storepass %PYDMG_KEYSTORE_PASS% -keypass %PYDMG_KEYSTORE_PASS% ^
+            -dname "CN=pydmg-neogeo, OU=dev, O=pydmg, L=local, S=local, C=ES"
+    )
+)
+echo ==^> Assembling release APK
 cd /d "%ROOT%android-app"
 call gradlew.bat assembleRelease
 if errorlevel 1 exit /b 1
 echo.
-echo Unsigned APK: android-app\app\build\outputs\apk\release\app-release-unsigned.apk
-echo Sign it with apksigner before installing.
+if exist "%KEYSTORE%" (
+    echo Signed release APK: android-app\app\build\outputs\apk\release\app-release.apk
+    echo Install directly:   adb install -r app\build\outputs\apk\release\app-release.apk
+) else (
+    echo Unsigned APK: android-app\app\build\outputs\apk\release\app-release-unsigned.apk
+    echo Sign it with apksigner before installing.
+)
 goto END
 
 :DONE_LIBS_ONLY

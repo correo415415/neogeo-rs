@@ -6,7 +6,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.os.Build
 import android.util.AttributeSet
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 
@@ -77,6 +79,13 @@ class EmulatorView @JvmOverloads constructor(
     private var lastViewW = 0
     private var lastViewH = 0
 
+    // How many upcoming frames still need a full background clear.
+    // Surfaces are double/triple buffered, so after any geometry change we
+    // must clear ~3 buffers; afterwards the game rect fully covers its
+    // area and clearing every frame is pure wasted fill-rate (a full-screen
+    // 1080p clear costs ~1.5 ms on low-end GPUs in software canvas mode).
+    @Volatile private var clearFrames = 3
+
     init {
         holder.addCallback(this)
         // Avoid Android compositor over-drawing our pixels.
@@ -85,16 +94,31 @@ class EmulatorView @JvmOverloads constructor(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
+        clearFrames = 3
+        // On high-refresh displays (90/120 Hz) tell the compositor we are
+        // a fixed-rate 60 Hz source so it can pick the optimal display
+        // mode instead of forcing us into the fastest one.
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                holder.surface.setFrameRate(
+                    60.0f,
+                    Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                )
+            } catch (_: Throwable) { /* best-effort hint */ }
+        }
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         lastViewW = width; lastViewH = height
         computeDestRect(width, height)
+        clearFrames = 3
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
     }
+
+    private fun requestClear() { clearFrames = 3 }
 
     private fun computeDestRect(viewW: Int, viewH: Int) {
         // Pick the source sub-rectangle first (full vs cropped).
@@ -119,6 +143,7 @@ class EmulatorView @JvmOverloads constructor(
             destRect.set(0, pad, viewW, pad + targetH)
         }
         needsRectRecompute = false
+        requestClear()
     }
 
     /**
@@ -137,10 +162,32 @@ class EmulatorView @JvmOverloads constructor(
             computeDestRect(lastViewW, lastViewH)
         }
 
-        val canvas: Canvas? = try { holder.lockCanvas() } catch (_: Throwable) { null }
+        // GPU-accelerated canvas when available (API 26+). The software
+        // fallback (`lockCanvas`) does the blit + scale on the CPU which
+        // costs 4–10 ms/frame at 1080p on entry-level SoCs; the hardware
+        // canvas offloads it to the GPU (<1 ms) and also uploads the
+        // bitmap as a texture only when its generation changes.
+        var hwCanvas = false
+        val canvas: Canvas? = try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                hwCanvas = true
+                holder.lockHardwareCanvas()
+            } else {
+                holder.lockCanvas()
+            }
+        } catch (_: Throwable) {
+            hwCanvas = false
+            try { holder.lockCanvas() } catch (_: Throwable) { null }
+        }
         canvas ?: return
         try {
-            canvas.drawRect(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), bgPaint)
+            // Hardware canvases start from an undefined buffer, so they
+            // must always be cleared; software canvases retain the previous
+            // contents so we only clear while `clearFrames` is pending.
+            if (hwCanvas || clearFrames > 0) {
+                canvas.drawRect(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), bgPaint)
+                if (clearFrames > 0) clearFrames--
+            }
             canvas.drawBitmap(bitmap, srcRect, destRect, blitPaint)
         } finally {
             holder.unlockCanvasAndPost(canvas)

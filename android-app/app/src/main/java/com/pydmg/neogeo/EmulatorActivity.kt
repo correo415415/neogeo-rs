@@ -8,8 +8,10 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
+import android.os.Process
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Landscape, fullscreen game activity. All emulation runs here on a
@@ -44,6 +46,13 @@ class EmulatorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Sustained performance mode: asks the SoC governor for a thermal
+        // envelope it can hold indefinitely instead of boost-then-throttle.
+        // For a long emulation session this yields far steadier frame times
+        // than short bursts of max clocks (supported devices only).
+        if (android.os.Build.VERSION.SDK_INT >= 24) {
+            try { window.setSustainedPerformanceMode(true) } catch (_: Throwable) {}
+        }
         setContentView(R.layout.activity_emulator)
 
         bindViews()
@@ -204,17 +213,29 @@ class EmulatorActivity : AppCompatActivity() {
         // the AAudio ring has time to prime. See the comment inside
         // the emu loop where `audio.start()` is actually invoked.
         emuThread = Thread({
-            // v4-audio: NO more `Thread.sleep(next - now)` pacing.
-            //
-            // On Android, `Thread.sleep` under 5 ms is extremely
-            // imprecise (documented 10–25 ms slack even on flagship
-            // hardware), which regularly caused the loop to run at
-            // 45–55 fps even when the emu itself needed <5 ms per
-            // frame. Instead we use SurfaceHolder.lockCanvas /
-            // unlockCanvasAndPost as our natural VSYNC — the compositor
-            // blocks us on the display refresh boundary anyway, which
-            // IS the 60 Hz clock we want.
-            //
+            // Ask the scheduler for real-time-ish treatment. THREAD_PRIORITY_DISPLAY
+            // (-4) keeps us above default UI work without starving the
+            // audio HAL thread; combined with MAX_PRIORITY on the Java side
+            // this measurably reduces frame-time jitter on busy devices.
+            try { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) } catch (_: Throwable) {}
+
+            // ---- Frame pacing -------------------------------------------------
+            // Previous versions relied on SurfaceHolder.lockCanvas blocking at
+            // the display refresh boundary as an implicit 60 Hz clock. That
+            // breaks on 90/120/144 Hz panels (the game runs 1.5–2.4× too fast)
+            // and on devices where the compositor doesn't throttle software
+            // canvases. Instead we pace explicitly against a monotonic
+            // deadline at the Neo Geo's real refresh (59.185606 Hz):
+            //   · coarse wait: LockSupport.parkNanos down to ~2 ms before the
+            //     deadline (cheap, lets the CPU race to idle);
+            //   · fine wait: Thread.yield spin for the last stretch (precise,
+            //     bounded to 2 ms so it can't melt the battery);
+            //   · if we're LATE (emu frame took > period) we skip the wait
+            //     entirely and resync the deadline so one slow frame never
+            //     snowballs into a stutter train.
+            val framePeriodNs = (1_000_000_000.0 / 59.185606).toLong()
+            var nextDeadline = System.nanoTime() + framePeriodNs
+
             // Audio timing is decoupled: the AAudio callback thread
             // drains from the SPSC ring at its own real-time cadence.
             // If the emu overshoots one frame every now and then, the
@@ -304,14 +325,32 @@ class EmulatorActivity : AppCompatActivity() {
                         }
                     }
                 }
-                // Note: no Thread.sleep here — presentFrame() blocks on
-                // the compositor VSYNC (SurfaceView’s lockCanvas is
-                // synchronised to the display refresh boundary), so
-                // the loop already runs at the display rate. Pause
-                // handling is the only reason we need to yield when we
-                // skipped the emu tick.
                 if (paused.get() || (net?.paused?.get() == true)) {
+                    // Paused: idle politely and resync the pacing deadline so
+                    // resume doesn't fast-forward a burst of frames.
                     try { Thread.sleep(16) } catch (_: InterruptedException) { break }
+                    nextDeadline = System.nanoTime() + framePeriodNs
+                } else {
+                    // ---- Precise pacing to 59.1856 Hz ----
+                    var now = System.nanoTime()
+                    if (now >= nextDeadline + framePeriodNs) {
+                        // More than a full frame late → resync, don't chase.
+                        nextDeadline = now + framePeriodNs
+                    } else {
+                        // Coarse: park until ~2 ms before the deadline.
+                        var remaining = nextDeadline - now
+                        while (remaining > 2_000_000L) {
+                            LockSupport.parkNanos(remaining - 2_000_000L)
+                            if (!running.get()) break
+                            now = System.nanoTime()
+                            remaining = nextDeadline - now
+                        }
+                        // Fine: yield-spin the last stretch (bounded ≤ 2 ms).
+                        while (System.nanoTime() < nextDeadline && running.get()) {
+                            Thread.yield()
+                        }
+                        nextDeadline += framePeriodNs
+                    }
                 }
             }
             audio.stop()
