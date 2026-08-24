@@ -616,6 +616,61 @@ pub extern "system" fn Java_com_pydmg_neogeo_NativeBridge_nativeStateChecksum(
 }
 
 // ---------------------------------------------------------------------------
+//   Savestates
+// ---------------------------------------------------------------------------
+
+/// Serialize the full emulation state into a Java byte[] (NGSS v1 format,
+/// self-contained: header + game identity + payload, ~220 KiB).
+/// Returns null if no emulator is loaded or the array allocation fails.
+#[no_mangle]
+pub extern "system" fn Java_com_pydmg_neogeo_NativeBridge_nativeSaveState<'a>(
+    env: JNIEnv<'a>, _class: JClass<'a>,
+) -> JByteArray<'a> {
+    let data = with_state(Vec::new(), |st| st.system.save_state());
+    if data.is_empty() {
+        log::warn!("nativeSaveState: no emulator loaded");
+        return JByteArray::default();
+    }
+    match env.byte_array_from_slice(&data) {
+        Ok(arr) => {
+            log::info!("nativeSaveState: {} bytes", data.len());
+            arr
+        }
+        Err(e) => {
+            log::error!("nativeSaveState: byte_array_from_slice failed: {e}");
+            JByteArray::default()
+        }
+    }
+}
+
+/// Restore a state previously produced by `nativeSaveState`.
+/// Validation (magic, version, same-game guard) happens in the core;
+/// on failure the previous state is preserved (transactional load).
+/// Returns true on success.
+#[no_mangle]
+pub extern "system" fn Java_com_pydmg_neogeo_NativeBridge_nativeLoadState(
+    env: JNIEnv, _class: JClass, data: JByteArray,
+) -> jboolean {
+    let bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            log::error!("nativeLoadState: convert_byte_array failed: {e}");
+            return JNI_FALSE;
+        }
+    };
+    with_state(JNI_FALSE, |st| match st.system.load_state(&bytes) {
+        Ok(()) => {
+            log::info!("nativeLoadState: ok ({} bytes)", bytes.len());
+            JNI_TRUE
+        }
+        Err(e) => {
+            log::warn!("nativeLoadState: rejected: {e}");
+            JNI_FALSE
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
 //   Static metadata exposed to Kotlin
 // ---------------------------------------------------------------------------
 

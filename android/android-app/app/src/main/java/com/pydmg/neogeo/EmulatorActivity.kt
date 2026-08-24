@@ -21,6 +21,10 @@ import java.util.concurrent.locks.LockSupport
  */
 class EmulatorActivity : AppCompatActivity() {
 
+    companion object {
+        private const val TAG = "EmulatorActivity"
+    }
+
     private lateinit var emulatorView: EmulatorView
     private lateinit var audio: AudioEngine
 
@@ -123,6 +127,78 @@ class EmulatorActivity : AppCompatActivity() {
             }.start()
     }
 
+    // ---------- Savestates ----------
+    //
+    // El fichero vive en el almacenamiento interno de la app:
+    //   files/savestates/<set>.ngss   (un slot por juego)
+    // Las llamadas JNI son seguras con el overlay visible: el bucle de
+    // emulación está pausado (paused=true) y el mutex del lado Rust
+    // serializa cualquier carrera residual. En partida LAN se bloquea:
+    // cargar un estado solo en un peer rompería el lockstep.
+
+    private fun stateFile(): java.io.File {
+        val name = PydmgApp.prefs.lastCartName.ifEmpty { "unknown" }
+        val dir = java.io.File(filesDir, "savestates")
+        dir.mkdirs()
+        return java.io.File(dir, "$name.ngss")
+    }
+
+    private fun toast(resId: Int) {
+        android.widget.Toast.makeText(this, resId, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun doSaveState() {
+        if (PydmgApp.app.netSession != null) {
+            toast(R.string.state_netplay_blocked)
+            return
+        }
+        val data = NativeBridge.nativeSaveState()
+        if (data == null || data.isEmpty()) {
+            toast(R.string.state_save_failed)
+            return
+        }
+        try {
+            // Escritura atómica: tmp + rename para no corromper el estado
+            // previo si la app muere a mitad de escritura.
+            val f = stateFile()
+            val tmp = java.io.File(f.parentFile, f.name + ".tmp")
+            tmp.writeBytes(data)
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                if (!tmp.renameTo(f)) throw java.io.IOException("rename failed")
+            }
+            Log.i(TAG, "savestate guardado: ${f.name} (${data.size} bytes)")
+            toast(R.string.state_saved)
+        } catch (e: Exception) {
+            Log.e(TAG, "savestate write failed", e)
+            toast(R.string.state_save_failed)
+        }
+    }
+
+    private fun doLoadState() {
+        if (PydmgApp.app.netSession != null) {
+            toast(R.string.state_netplay_blocked)
+            return
+        }
+        val f = stateFile()
+        if (!f.exists()) {
+            toast(R.string.state_none)
+            return
+        }
+        val ok = try {
+            NativeBridge.nativeLoadState(f.readBytes())
+        } catch (e: Exception) {
+            Log.e(TAG, "savestate read failed", e)
+            false
+        }
+        if (ok) {
+            toast(R.string.state_loaded)
+            hidePauseOverlay()
+        } else {
+            toast(R.string.state_load_failed)
+        }
+    }
+
     // ---------- Binding ----------
 
     private fun bindViews() {
@@ -150,6 +226,8 @@ class EmulatorActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_back_to_library).setOnClickListener {
             finish()
         }
+        findViewById<Button>(R.id.btn_save_state).setOnClickListener { doSaveState() }
+        findViewById<Button>(R.id.btn_load_state).setOnClickListener { doLoadState() }
 
         bindTouch(R.id.btn_coin_p1,   1, NativeBridge.BTN_COIN)
         bindTouch(R.id.btn_select_p1, 1, NativeBridge.BTN_SELECT)
