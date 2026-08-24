@@ -73,18 +73,22 @@ const M68K_CYCLES_PER_AUDIO_SAMPLE: u64 = 12_000_000 / YM_OUTPUT_HZ;
 /// `cartslot_fixed("cmc50_kof2000n")` etc.
 fn detect_fix_bank_type(name: &str) -> crate::graphics::video::FixBankType {
     let n = name.to_ascii_lowercase();
-    // FIX_BANKTYPE_GAROU: Garou + Metal Slug 3/4 family.
+    // FIX_BANKTYPE_GAROU (`get_fixed_bank_type() == 1`): Garou +
+    // Metal Slug 3/4 family + mslug5 (MAME `neogeo_pvc_mslug5_cart_device`).
     const GAROU_FAMILY: &[&str] = &[
         "garou", "garouh", "garoubl",
         "mslug3", "mslug3a", "mslug3h", "mslug3b6",
         "mslug4", "mslug4h", "ms4plus",
+        "mslug5", "mslug5h",
     ];
     if GAROU_FAMILY.iter().any(|g| n == *g) {
         return crate::graphics::video::FixBankType::Garou;
     }
-    // FIX_BANKTYPE_KOF2000: KOF2000 and its bootlegs.
+    // FIX_BANKTYPE_KOF2000 (`get_fixed_bank_type() == 2`): KOF2000 plus the
+    // PVC carts svc/kof2003/kof2003h (see MAME `bus/neogeo/pvc.h`).
     const KOF2K_FAMILY: &[&str] = &[
         "kof2000", "kof2000n",
+        "svc", "kof2003", "kof2003h",
     ];
     if KOF2K_FAMILY.iter().any(|g| n == *g) {
         return crate::graphics::video::FixBankType::Kof2000;

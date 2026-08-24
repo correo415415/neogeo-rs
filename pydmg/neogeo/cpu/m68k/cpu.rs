@@ -363,6 +363,14 @@ impl Cpu {
 
     /// Standard format-B (6-byte) frame: SR, PC.
     pub fn enter_exception<B: Bus>(&mut self, bus: &mut B, vector: Exception) {
+        // Debug aid: log non-interrupt exceptions (vector < 24), which on
+        // this hardware almost always indicate an emulation bug.
+        if (vector as u8) < 24 {
+            log::debug!(
+                "EXC {:?} at PC=${:08X} (instr_pc=${:08X} ir=${:04X})",
+                vector, self.pc, self.instr_pc, self.ir
+            );
+        }
         let was_supervisor = self.sr.supervisor();
         if was_supervisor {
             self.ssp = self.a[7];
@@ -550,6 +558,16 @@ impl Cpu {
         self.ir = opcode;
         let used = crate::cpu::m68k::exec::execute(self, bus, opcode);
         self.cycles = self.cycles.wrapping_add(u64::from(used));
+
+        // Debug aid: a jump into the vector table (< $80) is almost always
+        // a wild pointer — log the source instruction.
+        if self.pc < 0x80 && self.instr_pc >= 0x80 {
+            log::debug!(
+                "WILD JUMP to ${:08X} from instr at ${:08X} (ir=${:04X}) \
+                 D0=${:08X} A0=${:08X} A7=${:08X}",
+                self.pc, self.instr_pc, self.ir, self.d[0], self.a[0], self.a[7]
+            );
+        }
 
         // Late-detected PC misalignment. With jump_to() in place this
         // should now be unreachable, but keep it as a safety net for any
