@@ -225,6 +225,10 @@ pub struct Cpu {
     /// solely to build the address-error stack frame. Updated alongside
     /// `self.pc` on every fetch and (approximately) at major bus accesses.
     pub au: u32,
+    /// Debug aid: ring buffer of recent instruction PCs (only records
+    /// control-flow discontinuities to stay cheap), dumped on wild jumps.
+    pub pc_history: [u32; 32],
+    pub pc_history_idx: usize,
 }
 
 impl Cpu {
@@ -244,6 +248,8 @@ impl Cpu {
             address_error: None,
             no_trace: false,
             au: 0,
+            pc_history: [0; 32],
+            pc_history_idx: 0,
         }
     }
 
@@ -559,13 +565,30 @@ impl Cpu {
         let used = crate::cpu::m68k::exec::execute(self, bus, opcode);
         self.cycles = self.cycles.wrapping_add(u64::from(used));
 
-        // Debug aid: a jump into the vector table (< $80) is almost always
-        // a wild pointer — log the source instruction.
+        // Debug aid: record control-flow discontinuities (anything that is
+        // not a straight-line fall-through) in a small ring buffer.
+        if self.pc != self.au && self.pc != self.instr_pc.wrapping_add(2) {
+            let i = self.pc_history_idx & 31;
+            self.pc_history[i] = self.instr_pc;
+            self.pc_history[(i + 1) & 31] = self.pc | 0x8000_0000; // mark targets
+            self.pc_history_idx = (i + 2) & 31;
+        }
+        // A jump into the vector table (< $80) is almost always a wild
+        // pointer — log the source instruction and recent flow.
         if self.pc < 0x80 && self.instr_pc >= 0x80 {
+            let mut flow = String::new();
+            for k in 0..32 {
+                let v = self.pc_history[(self.pc_history_idx + k) & 31];
+                if v & 0x8000_0000 != 0 {
+                    flow.push_str(&format!("->{:06X} ", v & 0x00FF_FFFF));
+                } else {
+                    flow.push_str(&format!("{:06X}", v));
+                }
+            }
             log::debug!(
                 "WILD JUMP to ${:08X} from instr at ${:08X} (ir=${:04X}) \
-                 D0=${:08X} A0=${:08X} A7=${:08X}",
-                self.pc, self.instr_pc, self.ir, self.d[0], self.a[0], self.a[7]
+                 D0=${:08X} A0=${:08X} A7=${:08X} flow: {}",
+                self.pc, self.instr_pc, self.ir, self.d[0], self.a[0], self.a[7], flow
             );
         }
 
