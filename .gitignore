@@ -3,8 +3,8 @@ target/
 snap/
 nvram/
 # Android build artifacts
-android-app/app/build/
-android-app/.gradle/
-android-app/local.properties
-android-app/app/src/main/jniLibs/**/*.so
-android-app/release.keystore
+android/android-app/app/build/
+android/android-app/.gradle/
+android/android-app/local.properties
+android/android-app/app/src/main/jniLibs/**/*.so
+android/android-app/release.keystore

@@ -1,22 +1,20 @@
 # ============================================================================
-#  pydmg-neogeo — repo root = ANDROID port
+#  pydmg-neogeo — carpeta android/ = puerto Android
 #
 #  Layout del repositorio:
-#    /               → puerto Android (este workspace)
+#    /android        → puerto Android (este workspace)
 #      neogeo/       → copia del core Rust del emulador (duplicado del core
 #                      de pydmg/neogeo, sin SDL2: sólo la librería)
 #      android-jni/  → puente JNI (cdylib) usado por la app Kotlin
 #      android-app/  → aplicación Android nativa (Kotlin + Gradle)
 #      build-android.sh / .bat → cross-compilación + APK
 #    /pydmg          → emulador de PC completo (core + CLI + GUI SDL2 +
-#                      tests + docs + examples). Es un paquete independiente,
-#                      EXCLUIDO de este workspace: compílalo con
-#                      `cd pydmg && cargo build --release`.
+#                      tests + docs + examples). Paquete independiente:
+#                      compílalo con `cd pydmg && cargo build --release`.
 # ============================================================================
 
 [workspace]
 members = [".", "android-jni"]
-exclude = ["pydmg"]
 resolver = "2"
 
 [package]
