@@ -565,9 +565,14 @@ impl Cpu {
         let used = crate::cpu::m68k::exec::execute(self, bus, opcode);
         self.cycles = self.cycles.wrapping_add(u64::from(used));
 
-        // Debug aid: record control-flow discontinuities (anything that is
-        // not a straight-line fall-through) in a small ring buffer.
-        if self.pc != self.au && self.pc != self.instr_pc.wrapping_add(2) {
+        // Debug aid: record call-level control flow (jsr/jmp/rts/rte/rtr)
+        // in a small ring buffer. Loop branches (dbra/bcc) are skipped so
+        // tight loops don't erase the call history.
+        let is_call_flow = (self.ir & 0xFF80) == 0x4E80 // jsr/jmp
+            || self.ir == 0x4E75 // rts
+            || self.ir == 0x4E73 // rte
+            || self.ir == 0x4E77; // rtr
+        if is_call_flow {
             let i = self.pc_history_idx & 31;
             self.pc_history[i] = self.instr_pc;
             self.pc_history[(i + 1) & 31] = self.pc | 0x8000_0000; // mark targets
