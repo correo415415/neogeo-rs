@@ -5,7 +5,30 @@ Arquitectura: **core Rust → cdylib JNI → Activity Kotlin**, sin SDL2 (la
 UI es 100 % Android nativa: `SurfaceView` + `AudioTrack` + controles
  táctiles).
 
-## Novedades de esta revisión (v3.2 — audio-fix + LAN multiplayer)
+## Novedades v0.2 (rendimiento + interfaz + release firmada)
+
+- **⚡ Render por GPU**: `lockHardwareCanvas` (API 26+) con fallback
+  software — el blit+escala baja de 4-10 ms/frame a <1 ms en SoCs de
+  gama baja. Clear de fondo solo tras cambios de geometría.
+- **🎯 Pacing preciso a 59.185606 Hz** con deadline monotónico
+  (`parkNanos` + yield-spin acotado). Corrige la velocidad x1.5-x2.4
+  en pantallas de 90/120 Hz. `Surface.setFrameRate(60, FIXED_SOURCE)`.
+- **🛟 Frameskip adaptativo** (máx. 2 presentaciones seguidas): en
+  hardware débil el juego mantiene velocidad y audio perfectos aunque
+  el blit no llegue a 60 fps.
+- **🔋 `setSustainedPerformanceMode`** + `THREAD_PRIORITY_DISPLAY` en
+  el hilo del emulador: clocks sostenidos sin throttling térmico.
+- **📚 Biblioteca con títulos reales**: base de datos de ~150 sets
+  ("Metal Slug 3 · 2000 · SNK" en vez de "mslug3"), tiles con acento
+  de color por juego, filtrado fluido con DiffUtil, ripple y chevron.
+- **✨ Pulido de UX**: overlay de pausa con fade, vibración háptica en
+  botones táctiles (conmutable en Ajustes).
+- **📦 APK release firmada automáticamente**:
+  `./build-android.sh --release` genera el keystore (primer uso) y
+  produce `app-release.apk` instalable directamente. R8 minify +
+  shrinkResources (~40 % menos APK).
+
+## Novedades de la revisión anterior (v3.2 — audio-fix + LAN multiplayer)
 
 - **🌐 Multijugador LAN (2 dispositivos).** Nueva pantalla "Crear
   partida / Unirse" con autodescubrimiento por mDNS y fallback
