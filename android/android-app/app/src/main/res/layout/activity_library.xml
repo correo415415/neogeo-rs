@@ -228,6 +228,21 @@
                         android:textColor="@color/fg_primary"
                         android:minHeight="48dp" />
 
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="4dp"
+                        android:background="@color/divider" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/sw_haptics"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/settings_haptics"
+                        android:textColor="@color/fg_primary"
+                        android:minHeight="48dp" />
+
                     <TextView
                         style="@style/Text.Body"
                         android:layout_width="match_parent"

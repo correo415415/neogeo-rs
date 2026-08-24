@@ -28,6 +28,7 @@
     <string name="settings_section_controls">Controles</string>
     <string name="settings_use_joystick">Joystick analógico en lugar de cruceta</string>
     <string name="settings_local_multiplayer">Multijugador local (mostrar P2)</string>
+    <string name="settings_haptics">Vibración al pulsar botones</string>
     <string name="settings_opacity">Opacidad de controles</string>
     <string name="settings_scale">Escala de controles</string>
     <string name="settings_section_video">Vídeo</string>
