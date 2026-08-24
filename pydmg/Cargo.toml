@@ -1,3 +1,6 @@
+# Paquete independiente: NO forma parte del workspace Android de la raíz.
+[workspace]
+
 [package]
 name = "pydmg-neogeo"
 version = "0.1.0"

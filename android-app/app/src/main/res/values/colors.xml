@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand palette: warm "arcade cabinet" tones over a near-black UI. -->
+    <color name="brand_amber">#FFAB00</color>
+    <color name="brand_amber_dim">#CC8A00</color>
+    <color name="brand_red">#E53935</color>
+    <color name="brand_red_dim">#B71C1C</color>
+
+    <!-- Surfaces -->
+    <color name="bg_root">#0A0908</color>
+    <color name="bg_surface">#13110F</color>
+    <color name="bg_surface_2">#1C1815</color>
+    <color name="bg_surface_3">#241F1B</color>
+    <color name="bg_chip">#2A231D</color>
+    <color name="bg_chip_pressed">#3A2F26</color>
+
+    <!-- Text -->
+    <color name="fg_primary">#FFFFFFFF</color>
+    <color name="fg_secondary">#CCEDE5DD</color>
+    <color name="fg_tertiary">#8FCAB7A6</color>
+    <color name="fg_disabled">#55EDE5DD</color>
+
+    <!-- Strokes / dividers -->
+    <color name="divider">#22FFFFFF</color>
+    <color name="stroke_brand">#88FFAB00</color>
+
+    <!-- In-game controls -->
+    <color name="ctrl_face">#B3FFAB00</color>
+    <color name="ctrl_face_secondary">#9938312A</color>
+    <color name="ctrl_stroke">#88000000</color>
+    <color name="ctrl_text">#FFFFFFFF</color>
+
+    <!-- Legacy aliases so the v2 button drawables keep resolving. -->
+    <color name="bg_pad">#24150D</color>
+    <color name="btn_face">#B3FFAB00</color>
+    <color name="btn_face_secondary">#9938312A</color>
+    <color name="btn_text">#FFFFFFFF</color>
+
+    <!--
+      Legacy aliases used ONLY by the v2 activity_main.xml lateral-
+      drawer layout, which is not referenced anywhere in the v3 code
+      but may linger in a build tree that was extracted on top of a
+      previous v2 install. Providing them here lets AAPT link that
+      orphan file without failing the build. Safe to remove once the
+      user has deleted the stale layout.
+    -->
+    <color name="panel_bg">#13110F</color>
+    <color name="panel_bg_strong">#1C1815</color>
+    <color name="panel_stroke">#22FFFFFF</color>
+</resources>
