@@ -7,7 +7,7 @@
 //!   3. Just a single P-ROM file (`.bin` / `.rom`) for quick sanity tests.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -219,6 +219,133 @@ impl RomSet {
             }
         }
         Ok(())
+    }
+
+    // ============================================================
+    //  In-memory loaders (Android / embedding frontends).
+    //
+    //  These mirror the path-based loaders above but consume
+    //  already-read byte buffers instead of touching the filesystem.
+    //  The Android frontend obtains those bytes from Kotlin via the
+    //  SAF picker (`ContentResolver`) and pushes them through JNI.
+    //  Behaviour is byte-identical to the path-based loaders; only
+    //  the data source changes.
+    // ============================================================
+
+    /// Load a raw BIOS from an in-memory byte buffer.
+    /// Up to 512 KiB (Universe BIOS 4.0 size).
+    pub fn load_bios_from_bytes(&mut self, data: Vec<u8>) -> Result<()> {
+        if data.len() > 0x80000 {
+            return Err(RomError::BiosTooLarge(data.len()).into());
+        }
+        self.bios = data;
+        log::info!("Loaded BIOS from bytes ({} bytes)", self.bios.len());
+        Ok(())
+    }
+
+    /// Load a MAME-style parent BIOS zip from an in-memory byte buffer.
+    /// Equivalent to [`Self::load_parent_bios_zip`] but reads from RAM.
+    pub fn load_parent_bios_zip_from_bytes(&mut self, zip_bytes: &[u8]) -> Result<()> {
+        let reader = Cursor::new(zip_bytes);
+        let mut zip = zip::ZipArchive::new(reader)
+            .context("reading parent BIOS zip from bytes")?;
+        let mut bucket = CategorisedFiles::default();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let fname = entry.name().to_string();
+            let mut data = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut data)?;
+            categorise(fname, data, &mut bucket);
+        }
+        log::info!(
+            "Parent BIOS zip (in-memory): {} BIOS candidate(s), lo_rom={} bytes, fallback s={}, m={}",
+            bucket.bios_candidates.len(),
+            bucket.lo_rom.len(),
+            bucket.s.len(),
+            bucket.m.len(),
+        );
+        if self.bios.is_empty() && !bucket.bios_candidates.is_empty() {
+            if let Some((chosen_name, chosen_data)) = pick_bios(&mut bucket.bios_candidates) {
+                log::info!(
+                    "Auto-selecting BIOS '{}' ({} bytes) from in-memory parent set",
+                    chosen_name,
+                    chosen_data.len()
+                );
+                self.bios = chosen_data;
+            }
+        }
+        if !bucket.lo_rom.is_empty() && self.lo_rom.is_empty() {
+            log::info!(
+                "Parent BIOS set provides Y-zoom table 000-lo.lo ({} bytes)",
+                bucket.lo_rom.len()
+            );
+            self.lo_rom = bucket.lo_rom;
+        }
+        if let Some((_, d)) = bucket.s.into_iter().next() {
+            log::info!("BIOS SFIX captured: {} bytes (will respect HC259 Q5)", d.len());
+            self.bios_sfix = d.clone();
+            if self.cart.s_rom.is_empty() {
+                log::info!("  cart.s_rom empty → falling back to BIOS SFIX for cart slot");
+                self.cart.s_rom = d;
+            }
+        }
+        if let Some((_, d)) = bucket.m.into_iter().next() {
+            log::info!("BIOS SM1 captured: {} bytes (Z80 main-bank mux entry 0)", d.len());
+            self.sm1 = d.clone();
+            if self.cart.m_rom.is_empty() {
+                log::info!("  cart.m_rom empty → falling back to SM1 for cart slot");
+                self.cart.m_rom = d;
+            }
+        }
+        Ok(())
+    }
+
+    /// Load a MAME/FBNeo cart zip from an in-memory byte buffer.
+    /// `cart_name` is what the protection auto-detect uses (`mslug`,
+    /// `kof98`, …). On Android pass the filename without extension.
+    pub fn load_cart_zip_from_bytes(&mut self, cart_name: &str, zip_bytes: &[u8]) -> Result<()> {
+        let reader = Cursor::new(zip_bytes);
+        let mut zip = zip::ZipArchive::new(reader).context("reading cart zip from bytes")?;
+        let name = cart_name.to_string();
+        let mut bucket = CategorisedFiles::default();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let fname = entry.name().to_string();
+            let mut data = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut data)?;
+            categorise(fname, data, &mut bucket);
+        }
+        self.finalise_from_bucket(name, bucket)
+    }
+
+    /// Pick a specific BIOS by filename from a zip already loaded into memory.
+    pub fn pick_bios_from_zip_bytes(&mut self, zip_bytes: &[u8], wanted: &str) -> Result<()> {
+        let reader = Cursor::new(zip_bytes);
+        let mut zip = zip::ZipArchive::new(reader)?;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            if entry.name().eq_ignore_ascii_case(wanted) {
+                let mut data = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut data)?;
+                log::info!(
+                    "Loading BIOS '{}' ({} bytes) from in-memory zip",
+                    wanted,
+                    data.len()
+                );
+                self.bios = data;
+                return Ok(());
+            }
+        }
+        anyhow::bail!("BIOS '{}' not found in in-memory zip", wanted);
     }
 
     /// Explicit BIOS selection by *filename* inside an already-known parent
