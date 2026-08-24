@@ -320,6 +320,22 @@ impl System {
             log::info!("protection device active: {:?}", std::mem::discriminant(&prot));
         }
         self.bus.prot = prot;
+        // Debug aid: dump the fully decrypted P region for offline
+        // disassembly when NEOGEO_DUMP_PROM is set to a path.
+        if let Ok(path) = std::env::var("NEOGEO_DUMP_PROM") {
+            if !path.is_empty() {
+                // Undo the CPU-side pairwise swap so the file matches
+                // MAME's raw region byte order (big-endian words).
+                let mut out = self.bus.p_rom.clone();
+                for chunk in out.chunks_exact_mut(2) {
+                    chunk.swap(0, 1);
+                }
+                match std::fs::write(&path, &out) {
+                    Ok(()) => log::info!("dumped decrypted P region ({:#x} bytes) to {path}", out.len()),
+                    Err(e) => log::warn!("P region dump to {path} failed: {e}"),
+                }
+            }
+        }
         // Stash fix-tile S-ROM and sprite C-ROMs for the video renderer.
         self.s_rom = romset.cart.s_rom;
         self.bios_sfix = romset.bios_sfix;
