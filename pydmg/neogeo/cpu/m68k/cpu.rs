@@ -227,7 +227,7 @@ pub struct Cpu {
     pub au: u32,
     /// Debug aid: ring buffer of recent instruction PCs (only records
     /// control-flow discontinuities to stay cheap), dumped on wild jumps.
-    pub pc_history: [u32; 32],
+    pub pc_history: [u32; 128],
     pub pc_history_idx: usize,
 }
 
@@ -248,7 +248,7 @@ impl Cpu {
             address_error: None,
             no_trace: false,
             au: 0,
-            pc_history: [0; 32],
+            pc_history: [0; 128],
             pc_history_idx: 0,
         }
     }
@@ -572,18 +572,20 @@ impl Cpu {
             || self.ir == 0x4E75 // rts
             || self.ir == 0x4E73 // rte
             || self.ir == 0x4E77; // rtr
-        if is_call_flow {
-            let i = self.pc_history_idx & 31;
+        // Skip pure BIOS→BIOS flow so interrupt handler chains don't
+        // erase the cart-side call history.
+        if is_call_flow && (self.instr_pc < 0xC0_0000 || self.pc < 0xC0_0000) {
+            let i = self.pc_history_idx & 127;
             self.pc_history[i] = self.instr_pc;
-            self.pc_history[(i + 1) & 31] = self.pc | 0x8000_0000; // mark targets
-            self.pc_history_idx = (i + 2) & 31;
+            self.pc_history[(i + 1) & 127] = self.pc | 0x8000_0000; // mark targets
+            self.pc_history_idx = (i + 2) & 127;
         }
         // A jump into the vector table (< $80) is almost always a wild
         // pointer — log the source instruction and recent flow.
         if self.pc < 0x80 && self.instr_pc >= 0x80 {
             let mut flow = String::new();
-            for k in 0..32 {
-                let v = self.pc_history[(self.pc_history_idx + k) & 31];
+            for k in 0..128 {
+                let v = self.pc_history[(self.pc_history_idx + k) & 127];
                 if v & 0x8000_0000 != 0 {
                     flow.push_str(&format!("->{:06X} ", v & 0x00FF_FFFF));
                 } else {
