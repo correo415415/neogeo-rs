@@ -4,15 +4,16 @@
     android:layout_height="wrap_content"
     android:layout_marginBottom="10dp"
     android:background="@drawable/bg_rom_card"
+    android:foreground="?android:attr/selectableItemBackground"
     android:orientation="horizontal"
-    android:padding="12dp"
+    android:padding="14dp"
     android:clickable="true"
     android:focusable="true"
     android:gravity="center_vertical">
 
     <FrameLayout
-        android:layout_width="56dp"
-        android:layout_height="56dp"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
         android:background="@drawable/bg_thumb">
 
         <TextView
@@ -21,7 +22,7 @@
             android:layout_height="match_parent"
             android:gravity="center"
             android:textColor="@color/brand_amber"
-            android:textSize="22sp"
+            android:textSize="24sp"
             android:textStyle="bold"
             android:text="M" />
     </FrameLayout>
@@ -31,6 +32,7 @@
         android:layout_height="wrap_content"
         android:layout_weight="1"
         android:layout_marginStart="14dp"
+        android:layout_marginEnd="8dp"
         android:orientation="vertical">
 
         <TextView
@@ -42,18 +44,18 @@
             android:textStyle="bold"
             android:maxLines="1"
             android:ellipsize="end"
-            android:text="mslug" />
+            android:text="Metal Slug 3" />
 
         <TextView
             android:id="@+id/rom_subtitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
+            android:layout_marginTop="3dp"
             android:textColor="@color/fg_tertiary"
             android:textSize="12sp"
             android:maxLines="1"
             android:ellipsize="end"
-            android:text="Cartridge zip" />
+            android:text="2000 · SNK · 42.1 MB" />
     </LinearLayout>
 
     <TextView
@@ -70,4 +72,13 @@
         android:textStyle="bold"
         android:text="BIOS"
         android:visibility="gone" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:textColor="@color/fg_tertiary"
+        android:textSize="18sp"
+        android:importantForAccessibility="no"
+        android:text="›" />
 </LinearLayout>

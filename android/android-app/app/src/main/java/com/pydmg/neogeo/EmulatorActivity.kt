@@ -3,6 +3,7 @@ package com.pydmg.neogeo
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -94,17 +95,32 @@ class EmulatorActivity : AppCompatActivity() {
     @Deprecated("Manual back handling kept for simplicity.")
     override fun onBackPressed() {
         if (pauseOverlay.visibility == View.VISIBLE) {
-            // Hide the pause overlay and resume.
-            pauseOverlay.visibility = View.GONE
-            paused.set(false)
+            hidePauseOverlay()
         } else {
             // First back press shows the pause overlay; a second one
             // exits via btn_back_to_library. We deliberately do NOT call
             // super.onBackPressed() here: we want the user to always pass
             // through the pause overlay before leaving the emulator.
-            paused.set(true)
-            pauseOverlay.visibility = View.VISIBLE
+            showPauseOverlay()
         }
+    }
+
+    // ---------- Pause overlay (animated) ----------
+
+    private fun showPauseOverlay() {
+        paused.set(true)
+        pauseOverlay.alpha = 0f
+        pauseOverlay.visibility = View.VISIBLE
+        pauseOverlay.animate().alpha(1f).setDuration(160L).start()
+    }
+
+    private fun hidePauseOverlay() {
+        pauseOverlay.animate().alpha(0f).setDuration(120L)
+            .withEndAction {
+                pauseOverlay.visibility = View.GONE
+                pauseOverlay.alpha = 1f
+                paused.set(false)
+            }.start()
     }
 
     // ---------- Binding ----------
@@ -126,12 +142,10 @@ class EmulatorActivity : AppCompatActivity() {
 
     private fun wireHud() {
         findViewById<Button>(R.id.btn_hud_menu).setOnClickListener {
-            paused.set(true)
-            pauseOverlay.visibility = View.VISIBLE
+            showPauseOverlay()
         }
         findViewById<Button>(R.id.btn_resume).setOnClickListener {
-            paused.set(false)
-            pauseOverlay.visibility = View.GONE
+            hidePauseOverlay()
         }
         findViewById<Button>(R.id.btn_back_to_library).setOnClickListener {
             finish()
@@ -372,10 +386,17 @@ class EmulatorActivity : AppCompatActivity() {
 
     private fun bindTouch(viewId: Int, player: Int, bit: Int) {
         val v: View = findViewById(viewId) ?: return
+        val haptics = PydmgApp.prefs.hapticFeedback
         v.setOnTouchListener { view, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     setBit(player, bit, true); view.isPressed = true
+                    if (haptics) {
+                        view.performHapticFeedback(
+                            HapticFeedbackConstants.KEYBOARD_TAP,
+                            HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING
+                        )
+                    }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
                     setBit(player, bit, false); view.isPressed = false

@@ -56,6 +56,11 @@ class Prefs(ctx: Context) {
         get() = sp.getFloat(KEY_SCALE, 1.0f)
         set(v) { sp.edit().putFloat(KEY_SCALE, v).apply() }
 
+    /** Vibración sutil al pulsar botones táctiles (on por defecto). */
+    var hapticFeedback: Boolean
+        get() = sp.getBoolean(KEY_HAPTICS, true)
+        set(v) { sp.edit().putBoolean(KEY_HAPTICS, v).apply() }
+
     // ---------------- Video prefs ----------------
     var cropScreen: Boolean
         get() = sp.getBoolean(KEY_CROP, false)
@@ -76,6 +81,7 @@ class Prefs(ctx: Context) {
         private const val KEY_LAN_MP         = "lan_multiplayer"
         private const val KEY_OPACITY        = "control_opacity"
         private const val KEY_SCALE          = "control_scale"
+        private const val KEY_HAPTICS        = "control_haptics"
         private const val KEY_CROP           = "video_crop"
         private const val KEY_SMOOTH         = "video_smooth"
     }
