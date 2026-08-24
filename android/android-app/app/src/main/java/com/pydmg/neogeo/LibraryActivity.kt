@@ -52,7 +52,6 @@ class LibraryActivity : AppCompatActivity() {
 
     private lateinit var swJoystick: MaterialSwitch
     private lateinit var swHaptics: MaterialSwitch
-    private lateinit var swLocalMp: MaterialSwitch
     private lateinit var swCrop: MaterialSwitch
     private lateinit var swSmooth: MaterialSwitch
     private lateinit var sliderOpacity: Slider
@@ -151,7 +150,6 @@ class LibraryActivity : AppCompatActivity() {
         textFolderValue = findViewById(R.id.text_folder_value)
 
         swJoystick = findViewById(R.id.sw_use_joystick)
-        swLocalMp = findViewById(R.id.sw_local_mp)
         swHaptics = findViewById(R.id.sw_haptics)
         swCrop = findViewById(R.id.sw_crop)
         swSmooth = findViewById(R.id.sw_smooth)
@@ -203,7 +201,6 @@ class LibraryActivity : AppCompatActivity() {
     private fun wireSettings() {
         // Initial values
         swJoystick.isChecked = PydmgApp.prefs.useJoystick
-        swLocalMp.isChecked = PydmgApp.prefs.localMultiplayer
         swHaptics.isChecked = PydmgApp.prefs.hapticFeedback
         swCrop.isChecked = PydmgApp.prefs.cropScreen
         swSmooth.isChecked = PydmgApp.prefs.smoothFilter
@@ -211,7 +208,6 @@ class LibraryActivity : AppCompatActivity() {
         sliderScale.value = PydmgApp.prefs.controlScale.coerceIn(0.75f, 1.35f)
 
         swJoystick.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.useJoystick = c }
-        swLocalMp.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.localMultiplayer = c }
         swHaptics.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.hapticFeedback = c }
         swCrop.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.cropScreen = c }
         swSmooth.setOnCheckedChangeListener { _, c -> PydmgApp.prefs.smoothFilter = c }
@@ -345,16 +341,39 @@ class LibraryActivity : AppCompatActivity() {
         if (!ok) { toast(getString(R.string.err_cart)); return }
 
         PydmgApp.prefs.lastCartName = entry.name
-        runOnUiThread {
-            // If LAN netplay is enabled, detour through the discovery /
-            // handshake wizard first. It'll launch EmulatorActivity
-            // itself once the socket is up. Otherwise go direct.
-            val target = if (PydmgApp.prefs.lanMultiplayer)
-                NetplayActivity::class.java
-            else
-                EmulatorActivity::class.java
-            startActivity(Intent(this, target))
+        runOnUiThread { showLaunchChooser(entry.name) }
+    }
+
+    /**
+     * Selector de modo al arrancar un juego: jugar solo (1P), crear
+     * una sala LAN y esperar a otro jugador, o unirse a una sala
+     * existente del mismo juego. Sustituye al antiguo ajuste global
+     * "Multijugador LAN" — la decisión se toma por partida, como en
+     * los emuladores profesionales.
+     */
+    private fun showLaunchChooser(gameName: String) {
+        val dialog = com.google.android.material.bottomsheet.BottomSheetDialog(this)
+        val view = layoutInflater.inflate(R.layout.dialog_launch_mode, null)
+        view.findViewById<TextView>(R.id.launch_game_title).text =
+            NeoGeoGames.lookup(gameName)?.title ?: gameName
+
+        view.findViewById<View>(R.id.launch_solo).setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, EmulatorActivity::class.java))
         }
+        view.findViewById<View>(R.id.launch_host).setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, NetplayActivity::class.java)
+                .putExtra(NetplayActivity.EXTRA_MODE, NetplayActivity.MODE_HOST))
+        }
+        view.findViewById<View>(R.id.launch_join).setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, NetplayActivity::class.java)
+                .putExtra(NetplayActivity.EXTRA_MODE, NetplayActivity.MODE_JOIN))
+        }
+
+        dialog.setContentView(view)
+        dialog.show()
     }
 
     /**

@@ -66,8 +66,12 @@ class NetplayActivity : AppCompatActivity() {
      *  filtran/crean con este nombre de set. */
     private val myGame: String get() = PydmgApp.prefs.lastCartName
 
+    /** Modo con el que se abrió la pantalla (del selector de arranque). */
+    private var mode: Int = MODE_JOIN
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        mode = intent.getIntExtra(EXTRA_MODE, MODE_JOIN)
 
         // Portrait layout is built programmatically — no XML needed, the
         // activity is only ~150dp tall of content and this saves us a
@@ -133,7 +137,21 @@ class NetplayActivity : AppCompatActivity() {
         }
         btnCancel.setOnClickListener { finish() }
 
-        startDiscovery()
+        when (mode) {
+            MODE_HOST -> {
+                // El usuario ya eligió "Crear sala" en el selector: no
+                // mostramos el rol de cliente, arrancamos la sala ya.
+                hintLabel.visibility = View.GONE
+                startHosting()
+            }
+            else -> {
+                // Modo unirse: ocultar el botón de crear sala y escanear.
+                btnHost.visibility = View.GONE
+                hintLabel.visibility = View.GONE
+                status.text = getString(R.string.netplay_no_rooms)
+                startDiscovery()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -183,7 +201,10 @@ class NetplayActivity : AppCompatActivity() {
             Protocol.DEFAULT_TCP_PORT)
 
         // El nombre del juego viaja en el TXT record: los clientes solo
-        // verán esta sala si cargaron el mismo set.
+        // verán esta sala si cargaron el mismo set. En modo host no hay
+        // discovery de escaneo previo, así que la creamos aquí solo
+        // para registrar el servicio.
+        if (discovery == null) discovery = LanDiscovery(this)
         discovery?.registerHost(serviceName, Protocol.DEFAULT_TCP_PORT, myGame)
 
         pendingThread = Thread {
@@ -256,5 +277,10 @@ class NetplayActivity : AppCompatActivity() {
         } catch (_: Throwable) { emptyList() }
     }
 
-    companion object { private const val TAG = "netplay-ui" }
+    companion object {
+        private const val TAG = "netplay-ui"
+        const val EXTRA_MODE = "netplay_mode"
+        const val MODE_HOST = 1
+        const val MODE_JOIN = 2
+    }
 }
