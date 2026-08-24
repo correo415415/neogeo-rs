@@ -144,6 +144,15 @@ pub struct System {
     /// While < SCREEN_H the buffer is still partially cold and
     /// `render_frame_pixels` falls back to the one-shot full render.
     raster_lines_rendered: u64,
+    /// Snapshot of `raster_frame` taken at each VBLANK start (scanline 224
+    /// crossing). This is what `render_frame_pixels` returns: a *complete*,
+    /// tear-free frame. Returning the live `raster_frame` directly caused
+    /// visible tearing near the bottom because `run_frame()`'s cycle budget
+    /// expires mid-visible-area, mixing lines from two frames.
+    raster_presented: Vec<u32>,
+    /// Number of VBLANK snapshots taken. 0 = no complete frame yet →
+    /// fall back to the one-shot full render.
+    raster_snapshots: u64,
 }
 
 impl System {
@@ -177,6 +186,11 @@ impl System {
             ],
             raster_prev_scanline: 0,
             raster_lines_rendered: 0,
+            raster_presented: vec![
+                0u32;
+                crate::graphics::video::SCREEN_W * crate::graphics::video::SCREEN_H
+            ],
+            raster_snapshots: 0,
         }
     }
 
@@ -420,11 +434,14 @@ impl System {
         } else {
             None
         };
-        // Prefer the raster-accumulated buffer once it has been fully
-        // warmed up (every visible line rendered at least once). It carries
-        // the per-scanline VRAM state, so IRQ2 raster effects survive.
-        if self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64 {
-            return self.raster_frame.clone();
+        // Prefer the VBLANK-latched raster snapshot once at least one
+        // complete frame has been accumulated. It carries the per-scanline
+        // VRAM state (IRQ2 raster effects survive) AND is coherent: it was
+        // captured when all 224 lines belonged to the same frame, unlike
+        // the live `raster_frame` which is mid-update whenever the frame
+        // budget expires inside the visible area (caused bottom tearing).
+        if self.raster_snapshots > 0 {
+            return self.raster_presented.clone();
         }
         crate::graphics::video::render_frame_full(
             &self.bus.lspc,
@@ -471,6 +488,14 @@ impl System {
         };
         for i in 1..=delta {
             let hw_line = (u32::from(prev) + i) % 264;
+            // VBLANK start: all 224 visible lines of this frame are now in
+            // `raster_frame` — latch a coherent copy for presentation.
+            if hw_line == 224
+                && self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64
+            {
+                self.raster_presented.copy_from_slice(&self.raster_frame);
+                self.raster_snapshots = self.raster_snapshots.wrapping_add(1);
+            }
             if !(0x10..0xF0).contains(&hw_line) {
                 continue;
             }
