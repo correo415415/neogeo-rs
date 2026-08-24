@@ -258,6 +258,16 @@ class EmulatorActivity : AppCompatActivity() {
             val net = PydmgApp.app.netSession
             var localFrameCounter = 0
             var audioStarted = false
+
+            // ---- Adaptive presentation skip (slow-device safety net) ----
+            // If the device can't emulate + blit inside one frame period, we
+            // drop the PRESENTATION of at most 2 consecutive frames (the blit
+            // is the expensive part on entry-level GPUs/software canvases)
+            // while the emulation and audio keep running at full speed. The
+            // result on weak hardware is 30-40 visual fps with perfect game
+            // speed and unbroken audio, instead of a slow-motion crawl.
+            var skippedInARow = 0
+            val maxSkip = 2
             while (running.get()) {
                 // Session death → bail back to the library.
                 if (net != null && !net.alive.get()) {
@@ -304,7 +314,17 @@ class EmulatorActivity : AppCompatActivity() {
                     }
 
                     audio.pump()
-                    emulatorView.presentFrame()
+
+                    // Present unless we're already past the next deadline
+                    // (i.e. this frame overran). Cap consecutive skips so
+                    // the screen never freezes even under heavy load.
+                    val behind = System.nanoTime() > nextDeadline
+                    if (!behind || skippedInARow >= maxSkip) {
+                        emulatorView.presentFrame()
+                        skippedInARow = 0
+                    } else {
+                        skippedInARow++
+                    }
 
                     // Frame counter must advance every emu tick,
                     // both solo and netplay, so the AAudio warmup
