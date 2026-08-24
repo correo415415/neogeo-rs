@@ -131,6 +131,19 @@ pub struct System {
     audio_cycles_owed: u64,
     /// Captured stereo audio (interleaved L,R,L,R…) at YM_OUTPUT_HZ.
     pub audio_buffer: Vec<i16>,
+
+    /// Raster (per-scanline) accumulated frame buffer. Each visible line is
+    /// rendered incrementally in `step()` when the LSPC crosses it, so
+    /// mid-frame VRAM rewrites (IRQ2 raster effects like the VAPOROUS demo
+    /// water ripple) appear on exactly the lines they affect.
+    raster_frame: Vec<u32>,
+    /// LSPC scanline observed after the previous `lspc.tick` — used to
+    /// detect which lines were crossed by the current tick.
+    raster_prev_scanline: u16,
+    /// Total visible lines rendered into `raster_frame` since power-on.
+    /// While < SCREEN_H the buffer is still partially cold and
+    /// `render_frame_pixels` falls back to the one-shot full render.
+    raster_lines_rendered: u64,
 }
 
 impl System {
@@ -158,6 +171,12 @@ impl System {
             z80_cycles_owed: 0,
             audio_cycles_owed: 0,
             audio_buffer: Vec::new(),
+            raster_frame: vec![
+                0u32;
+                crate::graphics::video::SCREEN_W * crate::graphics::video::SCREEN_H
+            ],
+            raster_prev_scanline: 0,
+            raster_lines_rendered: 0,
         }
     }
 
@@ -401,6 +420,12 @@ impl System {
         } else {
             None
         };
+        // Prefer the raster-accumulated buffer once it has been fully
+        // warmed up (every visible line rendered at least once). It carries
+        // the per-scanline VRAM state, so IRQ2 raster effects survive.
+        if self.raster_lines_rendered >= crate::graphics::video::SCREEN_H as u64 {
+            return self.raster_frame.clone();
+        }
         crate::graphics::video::render_frame_full(
             &self.bus.lspc,
             self.bus.palette_ram.as_ref(),
@@ -413,6 +438,59 @@ impl System {
             bios_sfix,
             self.fix_bank_type,
         )
+    }
+
+    /// Render into the raster frame buffer every visible scanline the LSPC
+    /// crossed since the previous call. Called right after `lspc.tick` in
+    /// `step()` so each line is drawn with the VRAM/palette/latch state
+    /// current at that moment — this is what makes IRQ2-driven raster
+    /// effects (per-line sprite X shifts → water ripple, floor warp) work.
+    ///
+    /// Visible hardware lines are 0x10..=0xEF, mapping to output rows
+    /// 0..223. We render a line when the LSPC counter *advances onto* it,
+    /// i.e. with the state the 68k prepared during the preceding line.
+    fn raster_render_crossed_lines(&mut self) {
+        let cur = self.bus.lspc.scanline;
+        let prev = self.raster_prev_scanline;
+        if cur == prev {
+            return;
+        }
+        self.raster_prev_scanline = cur;
+        // Lines crossed this tick (LSPC wraps at 264).
+        let delta = (u32::from(cur) + 264 - u32::from(prev)) % 264;
+        // Latch systemlatch-derived render state once per burst; a tick
+        // rarely crosses more than one line, so this matches per-line
+        // latching in practice.
+        let palette_bank = (self.bus.systemlatch >> 7) & 1;
+        let screen_shadow = (self.bus.systemlatch & 0x01) != 0;
+        let use_cart_fix = (self.bus.systemlatch & 0x20) != 0; // Q5
+        let bios_sfix: Option<&[u8]> = if !use_cart_fix && !self.bios_sfix.is_empty() {
+            Some(self.bios_sfix.as_slice())
+        } else {
+            None
+        };
+        for i in 1..=delta {
+            let hw_line = (u32::from(prev) + i) % 264;
+            if !(0x10..0xF0).contains(&hw_line) {
+                continue;
+            }
+            let out_line = (hw_line - 0x10) as usize;
+            crate::graphics::video::render_scanline(
+                &self.bus.lspc,
+                self.bus.palette_ram.as_ref(),
+                &self.s_rom,
+                &self.c_roms,
+                &self.sprite_gfx_decoded,
+                &self.lo_rom,
+                &mut self.raster_frame,
+                out_line,
+                palette_bank,
+                screen_shadow,
+                bios_sfix,
+                self.fix_bank_type,
+            );
+            self.raster_lines_rendered = self.raster_lines_rendered.wrapping_add(1);
+        }
     }
 
     /// Reset both CPUs (re-reads the vector table at $0).
@@ -549,6 +627,7 @@ impl System {
 
         // ============ LSPC + IRQ dispatch =============
         let _ = self.bus.lspc.tick(cycles);
+        self.raster_render_crossed_lines();
         let cur_mask = self.m68k.sr.interrupt_mask();
         let req_level = if self.bus.lspc.irq3_pending {
             3
