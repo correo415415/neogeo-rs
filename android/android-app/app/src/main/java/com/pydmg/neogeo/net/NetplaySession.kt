@@ -211,7 +211,9 @@ class NetplaySession private constructor(
     fun sendKeyframe(frame: Int, crc32: Int) {
         if (role != Role.HOST) return
         try {
-            tcp.getOutputStream().write(KeyframePacket(frame, crc32).encode())
+            synchronized(tcpWriteLock) {
+                tcp.getOutputStream().write(KeyframePacket(frame, crc32).encode())
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "keyframe send failed: ${t.message}")
         }
