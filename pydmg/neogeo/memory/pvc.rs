@@ -11,13 +11,14 @@
 //!      written back so the game sees the handshake succeeded).
 //! 2. One-shot P-ROM descrambles (`*_decrypt_68k`) run at load time.
 //!
-//! Byte-order note: MAME's decrypts index the raw little-endian region with
-//! `BYTE_XOR_LE(i)` (= `i ^ 1` on LE hosts). Our `bus.p_rom` stores
-//! big-endian 68000 byte order after `load_p_rom`'s swap, i.e.
-//! `p_rom[j] == mame_rom[j ^ 1]`. Substituting `j = i ^ 1` everywhere makes
-//! the XOR passes index-direct (`p_rom[j] ^= xor[j % 0x20]`), makes the word
-//! bitswap read `p_rom[i+1] | p_rom[i+2] << 8` directly, and leaves all the
-//! even-sized block moves untouched.
+//! Byte-order note: PVC sets load p1/p2 with `ROM_LOAD32_WORD_SWAP`, which
+//! on a little-endian host stores each 16-bit file word byte-swapped in the
+//! raw region. Our loader interleaves the file bytes directly and then
+//! `load_p_rom` applies the same uniform pairwise swap — so `bus.p_rom` is
+//! **byte-for-byte identical to MAME's raw region** and the decrypts below
+//! use MAME's indices literally, with `BYTE_XOR_LE(i) = i ^ 1`. (Verified
+//! empirically against the real mslug5 set: raw-indexed decryption yields
+//! the `NEO-GEO` cart header and plausible reset vectors.)
 
 use super::prot::bitswap;
 
@@ -154,20 +155,21 @@ fn descramble_800000(
     const ROM_SIZE: usize = 0x800000;
     assert!(rom.len() >= ROM_SIZE, "PVC P region must be 8MiB");
 
-    // XOR passes (index-direct thanks to the j = i^1 substitution).
-    for j in 0..0x100000 {
-        rom[j] ^= xor1[j % 0x20];
+    // XOR passes: rom[i] ^= xor[BYTE_XOR_LE(i) % 0x20].
+    for i in 0..0x100000 {
+        rom[i] ^= xor1[(i ^ 1) % 0x20];
     }
-    for j in 0x100000..ROM_SIZE {
-        rom[j] ^= xor2[j % 0x20];
+    for i in 0x100000..ROM_SIZE {
+        rom[i] ^= xor2[(i ^ 1) % 0x20];
     }
 
-    // 16-bit bitswap on the middle bytes of each 4-byte group.
+    // 16-bit bitswap on rom[BYTE_XOR_LE(i+1)] / rom[BYTE_XOR_LE(i+2)]:
+    // with i % 4 == 0 these are the bytes at i and i+3.
     for i in (0x100000..ROM_SIZE).step_by(4) {
-        let w = (rom[i + 1] as u16) | ((rom[i + 2] as u16) << 8);
+        let w = (rom[i] as u16) | ((rom[i + 3] as u16) << 8);
         let w = bitswap(w as u32, word_swap) as u16;
-        rom[i + 1] = (w & 0xff) as u8;
-        rom[i + 2] = (w >> 8) as u8;
+        rom[i] = (w & 0xff) as u8;
+        rom[i + 3] = (w >> 8) as u8;
     }
 
     let mut buf = rom[..ROM_SIZE].to_vec();
@@ -213,18 +215,18 @@ fn descramble_900000(
         rom[0x800000 + i] ^= rom[0x100002 | i];
     }
 
-    for j in 0..0x100000 {
-        rom[j] ^= xor1[j % 0x20];
+    for i in 0..0x100000 {
+        rom[i] ^= xor1[(i ^ 1) % 0x20];
     }
-    for j in 0x100000..0x800000 {
-        rom[j] ^= xor2[j % 0x20];
+    for i in 0x100000..0x800000 {
+        rom[i] ^= xor2[(i ^ 1) % 0x20];
     }
 
     for i in (0x100000..0x800000).step_by(4) {
-        let w = (rom[i + 1] as u16) | ((rom[i + 2] as u16) << 8);
+        let w = (rom[i] as u16) | ((rom[i + 3] as u16) << 8);
         let w = bitswap(w as u32, word_swap) as u16;
-        rom[i + 1] = (w & 0xff) as u8;
-        rom[i + 2] = (w >> 8) as u8;
+        rom[i] = (w & 0xff) as u8;
+        rom[i + 3] = (w >> 8) as u8;
     }
 
     let mut buf = vec![0u8; ROM_SIZE];
