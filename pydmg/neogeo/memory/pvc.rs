@@ -337,10 +337,16 @@ mod tests {
     #[test]
     fn pvc_bankswitch_marker() {
         let mut pvc = PvcProt::new(PvcGame::Mslug5);
-        pvc.protection_w(0xff8, 0x2300); // low byte of bank address = 0x23
-        let base = pvc.protection_w(0xff9, 0x0045); // high bytes = 0x45
-        assert_eq!(base, Some(0x452300 + 0x100000));
-        assert_eq!(pvc.protection_r(0xff8) & 0x00ff, 0x00a0);
+        // MAME's write_bankprot_pvc triggers get_bank_base() on EVERY write
+        // at >= $FF8, so the $FF8 write itself already stamps the marker:
+        // 0x2300 -> (0x2300 & 0xfe00) | 0xa0 = 0x22a0, bank base
+        // (0x2300 >> 8) + 0x100000. The following $FF9 write then sees the
+        // stamped low register: bankaddress = (0x22a0 >> 8) | (0x0045 << 8).
+        let first = pvc.protection_w(0xff8, 0x2300);
+        assert_eq!(first, Some(0x0023 + 0x100000));
+        let base = pvc.protection_w(0xff9, 0x0045);
+        assert_eq!(base, Some(0x4522 + 0x100000));
+        assert_eq!(pvc.protection_r(0xff8), 0x22a0);
         assert_eq!(pvc.protection_r(0xff9) & 0x8000, 0);
     }
 
