@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NetplayActivity layout (PORTRAIT).
+  Dos modos, gobernados por EXTRA_MODE:
+    · HOST: tarjeta grande "sala creada" con animación de espera.
+    · JOIN: lista de salas del mismo juego (cards) + IP manual.
+  Reemplaza el antiguo layout programático por un diseño acorde al
+  resto de la app (paleta arcade + Material 3).
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/bg_root_gradient"
+    android:fitsSystemWindows="true"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp"
+    android:paddingTop="16dp"
+    android:paddingBottom="16dp">
+
+    <!-- Cabecera -->
+    <TextView
+        android:id="@+id/net_title"
+        style="@style/Text.Title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textStyle="bold"
+        android:text="@string/netplay_title" />
+
+    <TextView
+        android:id="@+id/net_game"
+        style="@style/Text.Caption"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/brand_amber"
+        android:textStyle="bold"
+        android:text="Metal Slug 3" />
+
+    <!-- ============ Panel HOST (esperando al P2) ============ -->
+    <LinearLayout
+        android:id="@+id/host_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:orientation="vertical"
+        android:background="@drawable/bg_card"
+        android:padding="24dp"
+        android:gravity="center_horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📡"
+            android:textSize="44sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/netplay_room_open"
+            android:textColor="@color/fg_primary"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/host_status"
+            style="@style/Text.Body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="@string/netplay_room_waiting" />
+
+        <ProgressBar
+            android:id="@+id/host_progress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:indeterminateTint="@color/brand_amber" />
+
+        <TextView
+            android:id="@+id/host_ips"
+            style="@style/Text.Caption"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="IP: 192.168.1.42 · puerto 27750" />
+    </LinearLayout>
+
+    <!-- ============ Panel JOIN (buscar salas) ============ -->
+    <LinearLayout
+        android:id="@+id/join_panel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="18dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            style="@style/Text.Body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/netplay_rooms_header"
+            android:textStyle="bold" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="10dp">
+
+            <ListView
+                android:id="@+id/room_list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:divider="@null"
+                android:dividerHeight="0dp"
+                android:scrollbars="none" />
+
+            <!-- Estado vacío: escaneando -->
+            <LinearLayout
+                android:id="@+id/join_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:orientation="vertical"
+                android:gravity="center_horizontal">
+
+                <ProgressBar
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:indeterminateTint="@color/brand_amber" />
+
+                <TextView
+                    android:id="@+id/join_status"
+                    style="@style/Text.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:text="@string/netplay_no_rooms" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- IP manual -->
+        <TextView
+            style="@style/Text.Caption"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/netplay_manual_header" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <EditText
+                android:id="@+id/edit_ip"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_card"
+                android:hint="@string/netplay_ip_hint"
+                android:textColorHint="@color/fg_disabled"
+                android:textColor="@color/fg_primary"
+                android:textSize="14sp"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:inputType="text"
+                android:imeOptions="actionDone"
+                android:maxLines="1" />
+
+            <Button
+                android:id="@+id/btn_connect_ip"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/btn_primary"
+                android:textColor="@color/bg_root"
+                android:textStyle="bold"
+                android:textAllCaps="false"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp"
+                android:text="@string/netplay_join_manual" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Estado de conexión (ambos modos) -->
+    <TextView
+        android:id="@+id/net_status"
+        style="@style/Text.Body"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center"
+        android:visibility="gone" />
+
+    <Button
+        android:id="@+id/btn_cancel"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/btn_secondary"
+        android:textColor="@color/fg_primary"
+        android:textAllCaps="false"
+        android:text="@string/netplay_cancel" />
+</LinearLayout>

@@ -3,13 +3,14 @@ package com.pydmg.neogeo
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.View
-import android.widget.ArrayAdapter
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
-import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -20,47 +21,47 @@ import com.pydmg.neogeo.net.Protocol
 import java.net.NetworkInterface
 
 /**
- * LAN netplay setup screen.
+ * LAN netplay screen. Two modes, chosen in the launch chooser
+ * (see LibraryActivity.showLaunchChooser):
  *
- * Two roles the user can pick:
+ *   * **MODE_HOST** ("Crear sala"): binds the TCP port, advertises
+ *     the room via NSD/mDNS *including the game name as a TXT
+ *     record*, and shows a "room open, waiting for P2" card until
+ *     the peer connects. Then jumps into [EmulatorActivity] with the
+ *     session handle stored on [PydmgApp].
  *
- *   * **Crear sala** (Host): the app binds the TCP port, advertises
- *     itself via NSD/mDNS *including the game name as a TXT record*,
- *     and waits for the peer to connect. Once it does, we finish()
- *     into [EmulatorActivity] with the session handle stored on
- *     [PydmgApp].
- *
- *   * **Unirse a sala** (Client): scans mDNS for rooms and shows
- *     ONLY the ones running the *same game* we just loaded (the TXT
- *     `game` attribute must match [Prefs.lastCartName]); a tap on
- *     one connects. There's also an "IP manual" button for networks
- *     where mDNS is blocked (some enterprise WiFi, guest networks
- *     with client isolation, etc.) — even then, the host re-checks
- *     the game name during the TCP handshake and rejects mismatches,
- *     so filtering isn't just cosmetic.
- *
- * This activity is launched *after* the user has picked a ROM from
- * LibraryActivity — [PydmgApp.pendingCart] holds the ROM already.
- * The netplay session is created; both peers then jump into
- * EmulatorActivity which knows to talk to `PydmgApp.netSession`
- * instead of reading pads directly for the remote player.
+ *   * **MODE_JOIN** ("Unirse a sala"): scans mDNS and lists ONLY
+ *     rooms running the *same game* we just loaded (TXT `game`
+ *     attribute must match [Prefs.lastCartName]) as tappable cards.
+ *     Manual IP entry remains available for networks where mDNS is
+ *     blocked — the host still re-checks the game name during the
+ *     TCP handshake and rejects mismatches, so filtering isn't just
+ *     cosmetic.
  */
 class NetplayActivity : AppCompatActivity() {
 
-    private lateinit var status: TextView
-    private lateinit var progress: ProgressBar
-    private lateinit var listPeers: ListView
-    private lateinit var editIp: EditText
-    private lateinit var btnConnectIp: Button
-    private lateinit var btnHost: Button
+    // Shared
+    private lateinit var netGame: TextView
+    private lateinit var netStatus: TextView
     private lateinit var btnCancel: Button
 
-    private var discovery: LanDiscovery? = null
-    private val peerAdapter by lazy {
-        ArrayAdapter<LanDiscovery.Peer>(this, android.R.layout.simple_list_item_1)
-    }
+    // Host panel
+    private lateinit var hostPanel: LinearLayout
+    private lateinit var hostStatus: TextView
+    private lateinit var hostIps: TextView
 
+    // Join panel
+    private lateinit var joinPanel: LinearLayout
+    private lateinit var roomList: ListView
+    private lateinit var joinEmpty: View
+    private lateinit var editIp: EditText
+    private lateinit var btnConnectIp: Button
+
+    private var discovery: LanDiscovery? = null
     private var pendingThread: Thread? = null
+
+    private val rooms = ArrayList<LanDiscovery.Peer>()
+    private val roomAdapter by lazy { RoomAdapter() }
 
     /** El juego que este dispositivo acaba de cargar — las salas se
      *  filtran/crean con este nombre de set. */
@@ -72,83 +73,40 @@ class NetplayActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         mode = intent.getIntExtra(EXTRA_MODE, MODE_JOIN)
+        setContentView(R.layout.activity_netplay)
 
-        // Portrait layout is built programmatically — no XML needed, the
-        // activity is only ~150dp tall of content and this saves us a
-        // resource file.
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 96, 48, 48)
-        }
-        val title = TextView(this).apply {
-            text = getString(R.string.netplay_title)
-            textSize = 24f
-        }
-        status = TextView(this).apply {
-            text = getString(R.string.netplay_pick_a_role_game, myGame)
-            setPadding(0, 32, 0, 16)
-        }
-        progress = ProgressBar(this).apply { visibility = View.GONE }
-        btnHost = Button(this).apply { text = getString(R.string.netplay_host) }
-        // NOTE: renamed from `hint` to `hintLabel` on purpose — the
-        // original v3.2 code shadowed the name with a local val holding
-        // a TextView, which then collided with the EditText's `hint`
-        // property setter a few lines below and produced
-        //   "Val cannot be reassigned" + "inferred type is String but
-        //    TextView was expected"
-        // The old code compiled purely by accident on older Kotlin
-        // versions; 1.9.x is stricter about this shadowing.
-        val hintLabel = TextView(this).apply {
-            text = getString(R.string.netplay_or)
-            setPadding(0, 24, 0, 8)
-        }
-        listPeers = ListView(this).apply { adapter = peerAdapter }
-        val manualRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        editIp = EditText(this).apply {
-            // Explicit setHint() so we never shadow with a local val
-            // called `hint` again. Cheaper than defensive coding — the
-            // property assignment `hint = ...` also works, but the
-            // setter form is bullet-proof against future refactors.
-            setHint(getString(R.string.netplay_ip_hint))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        btnConnectIp = Button(this).apply { text = getString(R.string.netplay_join_manual) }
-        manualRow.addView(editIp); manualRow.addView(btnConnectIp)
-        btnCancel = Button(this).apply { text = getString(R.string.netplay_cancel) }
+        netGame = findViewById(R.id.net_game)
+        netStatus = findViewById(R.id.net_status)
+        btnCancel = findViewById(R.id.btn_cancel)
+        hostPanel = findViewById(R.id.host_panel)
+        hostStatus = findViewById(R.id.host_status)
+        hostIps = findViewById(R.id.host_ips)
+        joinPanel = findViewById(R.id.join_panel)
+        roomList = findViewById(R.id.room_list)
+        joinEmpty = findViewById(R.id.join_empty)
+        editIp = findViewById(R.id.edit_ip)
+        btnConnectIp = findViewById(R.id.btn_connect_ip)
 
-        root.addView(title)
-        root.addView(status)
-        root.addView(progress)
-        root.addView(btnHost)
-        root.addView(hintLabel)
-        root.addView(listPeers)
-        root.addView(manualRow)
-        root.addView(btnCancel)
-        setContentView(root)
+        netGame.text = NeoGeoGames.lookup(myGame)?.title ?: myGame
 
-        btnHost.setOnClickListener { startHosting() }
+        roomList.adapter = roomAdapter
+        roomList.setOnItemClickListener { _, _, position, _ ->
+            val peer = rooms.getOrNull(position) ?: return@setOnItemClickListener
+            connectClient(peer.host.hostAddress ?: return@setOnItemClickListener)
+        }
         btnConnectIp.setOnClickListener {
             val ip = editIp.text.toString().trim()
             if (ip.isNotEmpty()) connectClient(ip)
-        }
-        listPeers.setOnItemClickListener { _, _, position, _ ->
-            val peer = peerAdapter.getItem(position) ?: return@setOnItemClickListener
-            connectClient(peer.host.hostAddress ?: return@setOnItemClickListener)
         }
         btnCancel.setOnClickListener { finish() }
 
         when (mode) {
             MODE_HOST -> {
-                // El usuario ya eligió "Crear sala" en el selector: no
-                // mostramos el rol de cliente, arrancamos la sala ya.
-                hintLabel.visibility = View.GONE
+                hostPanel.visibility = View.VISIBLE
                 startHosting()
             }
             else -> {
-                // Modo unirse: ocultar el botón de crear sala y escanear.
-                btnHost.visibility = View.GONE
-                hintLabel.visibility = View.GONE
-                status.text = getString(R.string.netplay_no_rooms)
+                joinPanel.visibility = View.VISIBLE
                 startDiscovery()
             }
         }
@@ -160,7 +118,7 @@ class NetplayActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    // ----- Discovery -----
+    // ----- Discovery (JOIN mode) -----
 
     private fun startDiscovery() {
         val d = LanDiscovery(this)
@@ -173,12 +131,11 @@ class NetplayActivity : AppCompatActivity() {
                     // handshake las rechazaría igualmente.
                     if (peer.gameName != myGame) return@runOnUiThread
                     // Avoid dupes when the mDNS TTL refreshes.
-                    val present = (0 until peerAdapter.count).any {
-                        peerAdapter.getItem(it)?.serviceName == peer.serviceName
+                    if (rooms.none { it.serviceName == peer.serviceName }) {
+                        rooms.add(peer)
+                        roomAdapter.notifyDataSetChanged()
+                        joinEmpty.visibility = View.GONE
                     }
-                    if (!present) peerAdapter.add(peer)
-                } else {
-                    // Peer lost — a full re-scan on next refresh is fine.
                 }
             }
         }
@@ -189,21 +146,12 @@ class NetplayActivity : AppCompatActivity() {
     // ----- Host role -----
 
     private fun startHosting() {
-        btnHost.isEnabled = false
-        listPeers.visibility = View.GONE
-        editIp.visibility = View.GONE
-        btnConnectIp.visibility = View.GONE
-        progress.visibility = View.VISIBLE
-
         val serviceName = "pydmg-${android.os.Build.MODEL.take(16).replace(' ', '_')}"
         val localIps = collectLocalIps().joinToString(" / ")
-        status.text = getString(R.string.netplay_hosting_wait_game, myGame, localIps,
-            Protocol.DEFAULT_TCP_PORT)
+        hostIps.text = getString(R.string.netplay_host_ips, localIps, Protocol.DEFAULT_TCP_PORT)
 
         // El nombre del juego viaja en el TXT record: los clientes solo
-        // verán esta sala si cargaron el mismo set. En modo host no hay
-        // discovery de escaneo previo, así que la creamos aquí solo
-        // para registrar el servicio.
+        // verán esta sala si cargaron el mismo set.
         if (discovery == null) discovery = LanDiscovery(this)
         discovery?.registerHost(serviceName, Protocol.DEFAULT_TCP_PORT, myGame)
 
@@ -219,12 +167,7 @@ class NetplayActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.w(TAG, "host accept failed", t)
                 runOnUiThread {
-                    status.text = getString(R.string.netplay_error, t.message ?: "?")
-                    progress.visibility = View.GONE
-                    btnHost.isEnabled = true
-                    listPeers.visibility = View.VISIBLE
-                    editIp.visibility = View.VISIBLE
-                    btnConnectIp.visibility = View.VISIBLE
+                    showStatus(getString(R.string.netplay_error, t.message ?: "?"))
                 }
             }
         }.apply { isDaemon = true; start() }
@@ -233,11 +176,9 @@ class NetplayActivity : AppCompatActivity() {
     // ----- Client role -----
 
     private fun connectClient(ipOrHost: String) {
-        btnHost.isEnabled = false
-        listPeers.isEnabled = false
+        roomList.isEnabled = false
         btnConnectIp.isEnabled = false
-        progress.visibility = View.VISIBLE
-        status.text = getString(R.string.netplay_connecting, ipOrHost)
+        showStatus(getString(R.string.netplay_connecting, ipOrHost))
 
         pendingThread = Thread {
             try {
@@ -251,17 +192,21 @@ class NetplayActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 Log.w(TAG, "client connect failed", t)
                 runOnUiThread {
-                    status.text = if (t is GameMismatchException)
-                        getString(R.string.netplay_game_mismatch, myGame)
-                    else
-                        getString(R.string.netplay_error, t.message ?: "?")
-                    progress.visibility = View.GONE
-                    btnHost.isEnabled = true
-                    listPeers.isEnabled = true
+                    showStatus(
+                        if (t is GameMismatchException)
+                            getString(R.string.netplay_game_mismatch, myGame)
+                        else
+                            getString(R.string.netplay_error, t.message ?: "?"))
+                    roomList.isEnabled = true
                     btnConnectIp.isEnabled = true
                 }
             }
         }.apply { isDaemon = true; start() }
+    }
+
+    private fun showStatus(text: String) {
+        netStatus.text = text
+        netStatus.visibility = View.VISIBLE
     }
 
     /** All non-loopback IPv4 addresses currently assigned to the
@@ -275,6 +220,25 @@ class NetplayActivity : AppCompatActivity() {
                     .map { it.hostAddress ?: "?" }
             }
         } catch (_: Throwable) { emptyList() }
+    }
+
+    // ----- Room list adapter (cards) -----
+
+    private inner class RoomAdapter : BaseAdapter() {
+        override fun getCount(): Int = rooms.size
+        override fun getItem(position: Int): Any = rooms[position]
+        override fun getItemId(position: Int): Long = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val v = convertView ?: LayoutInflater.from(this@NetplayActivity)
+                .inflate(R.layout.item_room, parent, false)
+            val peer = rooms[position]
+            v.findViewById<TextView>(R.id.room_name).text =
+                peer.serviceName.removePrefix("pydmg-").replace('_', ' ')
+            v.findViewById<TextView>(R.id.room_detail).text =
+                "${peer.host.hostAddress}:${peer.port}"
+            return v
+        }
     }
 
     companion object {

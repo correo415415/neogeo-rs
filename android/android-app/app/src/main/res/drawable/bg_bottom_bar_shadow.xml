@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Subtle upward gradient placed above the bottom action bar to give it
+     a floating, elevated feel over the scrolling list content. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:type="linear"
+        android:angle="90"
+        android:startColor="#00000000"
+        android:endColor="#99000000" />
+</shape>

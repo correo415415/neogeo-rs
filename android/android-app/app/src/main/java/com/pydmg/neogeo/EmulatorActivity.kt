@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Process
 import java.util.concurrent.atomic.AtomicBoolean
@@ -202,6 +203,14 @@ class EmulatorActivity : AppCompatActivity() {
         p1Joystick = findViewById(R.id.joystick_p1)
         p1Abcd = findViewById(R.id.abcd_pad)
         pauseOverlay = findViewById(R.id.pause_overlay)
+
+        // Cabecera del overlay de pausa: título "bonito" del juego + set.
+        val cart = PydmgApp.prefs.lastCartName
+        val pretty = NeoGeoGames.lookup(cart)?.title ?: cart
+        findViewById<TextView>(R.id.pause_game_title).text =
+            pretty.ifEmpty { getString(R.string.hud_pause) }
+        findViewById<TextView>(R.id.pause_game_subtitle).text =
+            if (cart.isNotEmpty() && pretty != cart) cart else getString(R.string.hud_pause)
     }
 
     private fun wireHud() {
