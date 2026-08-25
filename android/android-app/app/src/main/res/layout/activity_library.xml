@@ -396,6 +396,14 @@
         </ScrollView>
     </FrameLayout>
 
+    <!-- Sombra sutil sobre la barra inferior, para separarla del listado. -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="28dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="82dp"
+        android:background="@drawable/bg_bottom_bar_shadow" />
+
     <!-- Acciones inferiores: cargar zip / elegir carpeta -->
     <LinearLayout
         android:id="@+id/bottom_actions"
@@ -404,7 +412,7 @@
         android:orientation="horizontal"
         android:layout_gravity="bottom"
         android:padding="16dp"
-        android:background="#CC0A0908">
+        android:background="@color/bg_root">
 
         <Button
             android:id="@+id/btn_load_zip"
